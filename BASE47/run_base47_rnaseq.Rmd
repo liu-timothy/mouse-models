@@ -1,0 +1,319 @@
+---
+title: "run_base47_rnaseq"
+output: html_document
+---
+
+bulk RNA-seq per-sample expression matrix
+↓
+normalized/log-transformed expression
+↓
+47 BASE47 genes only
+↓
+RNA-seq BASE47 classifier
+↓
+Basal vs Luminal call per sample
+
+Install packages
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("DESeq2", quietly = TRUE)) {
+  BiocManager::install("DESeq2")
+}
+
+if (!requireNamespace("biomaRt", quietly = TRUE)) {
+  BiocManager::install("biomaRt")
+}
+
+if (!requireNamespace("pamr", quietly = TRUE)) {
+  install.packages("pamr")
+}
+
+library(DESeq2)
+library(pamr)
+library(tidyverse)
+
+
+
+```
+Subset to BASE47 genes
+```{r}
+#BASE47 genes
+base47_genes <- c(
+  "ALOX5AP", "BHMT", "CAPN5", "CD14", "CDK6", "CYP2J2", "CYP4B1",
+  "EMP3", "FAP", "FBP1", "GATA3", "HMGCS2", "MSN", "MT1X", "MT2A",
+  "PRRX1", "PPARG", "SCNN1B", "SCNN1G", "SLC9A2", "SPINK1", "TBX2",
+  "TMPRSS2", "UPK2", "PPFIBP2", "SEMA5A", "ADIRF", "SLC27A2",
+  "GLIPR1", "UPK1A", "TRAK1", "PALLD", "GPD1L", "TOX3", "TMEM97",
+  "CHST15", "VGLL1", "PLEKHG6", "PDGFC", "GAREM1", "GDPD3", "RNF128",
+  "TUBB6", "CAVIN3", "AHNAK2", "RAB15", "FAM174B"
+)
+```
+
+PREPARE RNAseq Matrix into BASE47 input format
+- raw data for BBN+UPPL is cpm but BASE47 requires tpm
+```{r}
+#expression matrix load in
+RNAseq_raw <- read.table("~/Documents/GitHub/EV-Resistance-analysis/BASE47/data/parental_mp1_K8HVZP-expression-matrix.csv", sep=",", row.names=1, header=T)
+
+#Drop protein-coding identity + counts columns // keep only cpm columns
+RNAseq_raw <- RNAseq_raw[, !grepl("count|^gene_biotype", colnames(RNAseq_raw)    )    ]
+
+# Convert mouse ensembl id to human gene id (MANUALLY, b/c bioMarT was down)
+base47_mouse_map <- read.table(
+  text = "
+ENSMUSG00000000093	TBX2
+ENSMUSG00000000216	SCNN1G
+ENSMUSG00000000385	TMPRSS2
+ENSMUSG00000000392	FAP
+ENSMUSG00000000440	PPARG
+ENSMUSG00000001473	TUBB6
+ENSMUSG00000006313	UPK1A
+ENSMUSG00000015619	GATA3
+ENSMUSG00000021062	RAB15
+ENSMUSG00000022231	SEMA5A
+ENSMUSG00000024503	SPINK1
+ENSMUSG00000026062	SLC9A2
+ENSMUSG00000026586	PRRX1
+ENSMUSG00000027359	SLC27A2
+ENSMUSG00000027875	HMGCS2
+ENSMUSG00000028019	PDGFC
+ENSMUSG00000028713	CYP4B1
+ENSMUSG00000030703	GDPD3
+ENSMUSG00000030873	SCNN1B
+ENSMUSG00000030930	CHST15
+ENSMUSG00000031131	VGLL1
+ENSMUSG00000031207	MSN
+ENSMUSG00000031438	RNF128
+ENSMUSG00000032536	TRAK1
+ENSMUSG00000035547	CAPN5
+ENSMUSG00000036528	PPFIBP2
+ENSMUSG00000037060	PRKCDBP
+ENSMUSG00000037278	TMEM97
+ENSMUSG00000038167	PLEKHG6
+ENSMUSG00000040212	EMP3
+ENSMUSG00000040274	CDK6
+ENSMUSG00000041523	UPK2
+ENSMUSG00000042680	GAREM
+ENSMUSG00000043668	TOX3
+ENSMUSG00000050627	GPD1L
+ENSMUSG00000051439	CD14
+ENSMUSG00000056888	GLIPR1
+ENSMUSG00000058056	PALLD
+ENSMUSG00000060063	ALOX5AP
+ENSMUSG00000069805	FBP1
+ENSMUSG00000074768	BHMT
+ENSMUSG00000078670	FAM174B
+ENSMUSG00000118667	AHNAK2
+ENSMUSG00000031762	MT2A
+ENSMUSG00000031765	MT1X
+ENSMUSG00000052914	CYP2J2
+NONE	ADIRF
+",
+  sep = "\t",
+  col.names = c("mouse_ensembl", "human_gene"),
+  stringsAsFactors = FALSE
+)
+
+# Convert mouse ensembl ID to human orthologs
+RNAseq_raw_base47 <- RNAseq_raw %>%
+  as.data.frame() %>%
+  rownames_to_column("mouse_ensembl") %>%
+  dplyr::mutate(mouse_ensembl_clean = sub("\\..*$", "", mouse_ensembl)) %>%
+  dplyr::inner_join(
+    base47_mouse_map %>%
+      dplyr::filter(mouse_ensembl != "NONE") %>%
+      dplyr::select(mouse_ensembl, human_gene),
+    by = c("mouse_ensembl_clean" = "mouse_ensembl")
+  ) %>%
+  dplyr::select(-dplyr::any_of(c("mouse_ensembl", "mouse_ensembl_clean", "gene_type"))) %>%
+  column_to_rownames("human_gene")
+RNAseq_raw_base47$gene_name <- NULL
+
+# mouse genes that didn't have human ortholog
+missing_genes <- setdiff(
+  base47_mouse_map$human_gene,
+  rownames(RNAseq_raw_base47)
+)
+missing_genes
+
+# Ensure matrix is numeric
+RNAseq_raw_base47 <- as.data.frame(RNAseq_raw_base47)
+RNAseq_raw_base47[] <- lapply(RNAseq_raw_base47, as.numeric)
+
+# Convert cpm to log2 upper quartile-normalized expression (that's how they did it in their methods)
+#   1. For each sample, calculate 75th percentile of nonzero CPM values
+#   2. Divide each sample by its own upper-quartile value
+#   3. Multiply by 1000 to put values on comparable scale
+#   4. Apply log2(x+1) transformation
+cpm_to_uq_log2 <- function(cpm_matrix) {
+  uq <- apply(cpm_matrix, 2, function(x) quantile(x[x > 0], 0.75))
+  scaled <- sweep(cpm_matrix, 2, uq, "/") * 1000
+  log2(scaled + 1)
+}
+
+base47_uqlog2 <- cpm_to_uq_log2(RNAseq_raw_base47)
+
+#centers genes across samples
+base47_input <- t(scale(t(base47_uqlog2), center = TRUE, scale = FALSE))
+
+#For each gene/row:
+#   centered value = sample value - median expression of that gene across samples
+base47_input <- sweep(base47_uqlog2, 1, apply(base47_uqlog2, 1, median, na.rm = TRUE), "-")
+
+# Every row median should now be exactly 0 (sanity check that matrix is converted correctly)
+stopifnot(all(abs(apply(base47_input, 1, median, na.rm = TRUE)) < 1e-10))
+
+
+missing_genes <- setdiff(rownames(xn), rownames(base47_input))
+
+#Checks for missing BASE47 genes in our data
+# - it's ok if it stops the script, it's just mainly to let you know which ones are missing
+# - if missing any genes, then run the BASE47 classifier on only the genes we have, rather than making the expression=0 for that missing gene
+if (length(missing_genes) > 0) {
+  stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
+}
+
+
+```
+
+
+Download BASE47 classifier model
+```{r}
+# Load BASE47 RNA-seq prediction matrix
+download.file(
+  "https://raw.githubusercontent.com/kimlabunc/Kardos_Rose_NanoString/main/BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",
+  destfile = "BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt"
+)
+x <- read.table("BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",sep="\t",row.names=1,header=T)
+
+# gets labels for subtypes from 1ST ROW where: 1 = Basal; 2=Luminal
+classes <- as.vector(t(x[1,]))
+
+# removes 1st row, converts exp values to numeric, and restores gene names as row names
+xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))}) # xn is training expression matrix: genes by samples
+rownames(xn) <- rownames(x)[-1]
+
+# if missing any genes, remove it from prediction matrix
+# rather than making expression=0
+common_genes <- intersect(rownames(base47_uqlog2), rownames(xn))
+
+# Optional: see what was removed
+missing_from_sample <- setdiff(rownames(xn), rownames(base47_uqlog2))
+missing_from_predictor <- setdiff(rownames(base47_uqlog2), rownames(xn))
+
+missing_from_sample
+missing_from_predictor
+
+# Subset both matrices to the same genes, same order
+base47_uqlog2_matched <- base47_uqlog2[common_genes, , drop = FALSE]
+xn_matched <- xn[common_genes, , drop = FALSE]
+
+# Classify BBN963+UPPL1541 RNAseq file
+df <- base47_input
+trainSet <- list(x=scale(xn_matched), y=classes, geneid=rownames(xn_matched), genenames=rownames(xn_matched))
+mytrain <-pamr.train(trainSet)
+pred.class <- pamr.predict(mytrain,scale(df),0)
+pred.prob <- pamr.predict(mytrain,scale(df),0,type="posterior")
+unc.tma.rna.calls <- as.data.frame(cbind(pred.prob,pred.class))
+colnames(unc.tma.rna.calls) <- c("Basal.Correlation","Luminal.Correlation","BASE47.Subtype")
+unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 1] <- "Basal"
+unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 2] <- "Luminal"
+
+write.csv(unc.tma.rna.calls, file="BASE47_classification_output.csv", row.names=TRUE)
+```
+
+Visual plot showing results
+
+```{r}
+
+#Create new columns for expected mol subtype and its BASE47 call
+unc.tma.rna.calls <- unc.tma.rna.calls %>%
+  rownames_to_column("Sample") %>%
+  mutate(
+    Tumor.Model = case_when(
+      str_detect(Sample, "^BBN") ~ "BBN",
+      str_detect(Sample, "^UPPL") ~ "UPPL",
+      TRUE ~ NA_character_
+    ),
+    Basal.Score = Basal.Correlation - Luminal.Correlation
+  ) %>%
+  arrange(Basal.Score) %>%
+  mutate(Sample = factor(Sample, levels = Sample))
+
+# Confusion matrix
+confusion_mtx <- table(
+  Expected = unc.tma.rna.calls$Tumor.Model,
+  Called = unc.tma.rna.calls$BASE47.Subtype
+)
+confusion_mtx <- as.data.frame.matrix(confusion_mtx)
+
+
+# Waterfall plot
+wfall_basal_score <- ggplot(unc.tma.rna.calls, aes(x=Sample, y=Basal.Score, color=Tumor.Model, fill=Tumor.Model)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_hue(c = 40) +
+  theme(legend.position="none") + theme_minimal() + coord_flip() + 
+  labs(
+  x = "Sample",
+  y = "Basal centroid score: Luminal = -1, Basal = +1"
+)
+wfall_basal_score
+ggsave("basal_score_waterfall.png", wfall_basal_score, width = 7, height = 5, dpi = 300)
+
+```
+
+GATA3 + PPARG Activity Scoring
+```{r}
+BiocManager::install("GEOquery")
+BiocManager::install("impute")
+library(samr)
+library(GEOquery)
+library(limma)
+
+gse <- getGEO("GSE47993", GSEMatrix = TRUE)[[1]]
+expr <- exprs(gse)
+pdata <- pData(gse)
+
+expr_umuc9 <- expr[, c("GSM1164283","GSM1164284","GSM1164285",  # control samples
+           "GSM1164286","GSM1164287","GSM1164288") # rosi treated samples
+           ]
+
+# Get gene names from illumina probe IDs (they used IlluminaHT-12 V4.0 expression beadchip)
+anno <- fData(gse)
+gene_symbols <- anno[rownames(expr_umuc9), "Symbol"]
+
+# keep probes with valid gene symbols
+expr_annotated <- expr_umuc9[!is.na(gene_symbols) & gene_symbols != "", ]
+gene_symbols <- gene_symbols[!is.na(gene_symbols) & gene_symbols != ""]
+# Collapse multiple probes per gene
+expr_gene <- avereps(expr_annotated, ID = gene_symbols) # now have gene expression x sample matrix
+
+sam_data <- list(
+  x = as.matrix(expr_gene),
+  y = c(1,1,1,2,2,2), #1=ctrl, #2=rosi-treated
+  geneid = rownames(expr_gene),
+  genenames = rownames(expr_gene),
+  logged2 = TRUE
+)
+
+samr_obj <- samr(sam_data, resp.type = "Two class unpaired", nperms = 100)
+delta_table <- samr.compute.delta.table(samr_obj)
+
+# Choose a delta where median FDR < 0.05
+sig <- samr.compute.siggenes.table(
+  samr.obj = samr_obj,
+  del = chosen_delta,
+  data = sam_data,
+  delta.table = delta_table
+)
+
+pparg_sig <- sig$genes.up[, "Gene Name"]
+
+
+
+```
+
+
