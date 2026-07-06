@@ -38,7 +38,7 @@ library(tidyverse)
 
 
 ```
-Subset to BASE47 genes
+BASE47 genes
 ```{r}
 #BASE47 genes
 base47_genes <- c(
@@ -56,7 +56,7 @@ PREPARE RNAseq Matrix into BASE47 input format
 - raw data for BBN+UPPL is cpm but BASE47 requires tpm
 ```{r}
 #expression matrix load in
-RNAseq_raw <- read.table("~/Documents/GitHub/EV-Resistance-analysis/BASE47/data/parental_mp1_K8HVZP-expression-matrix.csv", sep=",", row.names=1, header=T)
+RNAseq_raw <- read.table("~/Documents/GitHub/mouse-models/data/parental_mp1_K8HVZP-expression-matrix_cpm.csv", sep=",", row.names=1, header=T)
 
 #Drop protein-coding identity + counts columns // keep only cpm columns
 RNAseq_raw <- RNAseq_raw[, !grepl("count|^gene_biotype", colnames(RNAseq_raw)    )    ]
@@ -122,7 +122,7 @@ RNAseq_raw_base47 <- RNAseq_raw %>%
   as.data.frame() %>%
   rownames_to_column("mouse_ensembl") %>%
   dplyr::mutate(mouse_ensembl_clean = sub("\\..*$", "", mouse_ensembl)) %>%
-  dplyr::inner_join(
+  dplyr::inner_join( #filter to only BASE47 genes
     base47_mouse_map %>%
       dplyr::filter(mouse_ensembl != "NONE") %>%
       dplyr::select(mouse_ensembl, human_gene),
@@ -155,6 +155,8 @@ cpm_to_uq_log2 <- function(cpm_matrix) {
 }
 
 base47_uqlog2 <- cpm_to_uq_log2(RNAseq_raw_base47)
+base47_uqlog2 <- base47_uqlog2 %>% 
+  rename_with(~ str_remove(., "_cpm"), ends_with("_cpm"))
 
 #centers genes across samples
 base47_input <- t(scale(t(base47_uqlog2), center = TRUE, scale = FALSE))
@@ -166,16 +168,7 @@ base47_input <- sweep(base47_uqlog2, 1, apply(base47_uqlog2, 1, median, na.rm = 
 # Every row median should now be exactly 0 (sanity check that matrix is converted correctly)
 stopifnot(all(abs(apply(base47_input, 1, median, na.rm = TRUE)) < 1e-10))
 
-
-missing_genes <- setdiff(rownames(xn), rownames(base47_input))
-
-#Checks for missing BASE47 genes in our data
-# - it's ok if it stops the script, it's just mainly to let you know which ones are missing
-# - if missing any genes, then run the BASE47 classifier on only the genes we have, rather than making the expression=0 for that missing gene
-if (length(missing_genes) > 0) {
-  stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
-}
-
+rm(base47_mouse_map, RNAseq_raw, RNAseq_raw_base47)
 
 ```
 
@@ -195,6 +188,16 @@ classes <- as.vector(t(x[1,]))
 # removes 1st row, converts exp values to numeric, and restores gene names as row names
 xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))}) # xn is training expression matrix: genes by samples
 rownames(xn) <- rownames(x)[-1]
+
+missing_genes <- setdiff(rownames(xn), rownames(base47_input))
+
+#Checks for missing BASE47 genes in our data
+# - it's ok if it stops the script, it's just mainly to let you know which ones are missing
+# - if missing any genes, then run the BASE47 classifier on only the genes we have, rather than making the expression=0 for that missing gene
+if (length(missing_genes) > 0) {
+  stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
+}
+
 
 # if missing any genes, remove it from prediction matrix
 # rather than making expression=0
@@ -230,7 +233,7 @@ Visual plot showing results
 ```{r}
 
 #Create new columns for expected mol subtype and its BASE47 call
-unc.tma.rna.calls <- unc.tma.rna.calls %>%
+unc.tma.rna.calls_formatted <- unc.tma.rna.calls %>%
   rownames_to_column("Sample") %>%
   mutate(
     Tumor.Model = case_when(
@@ -240,19 +243,30 @@ unc.tma.rna.calls <- unc.tma.rna.calls %>%
     ),
     Basal.Score = Basal.Correlation - Luminal.Correlation
   ) %>%
-  arrange(Basal.Score) %>%
-  mutate(Sample = factor(Sample, levels = Sample))
+  arrange(Basal.Score)
+
+#extra formatting sort alphabetically by sample name
+unc.tma.rna.calls_formatted <- unc.tma.rna.calls_formatted %>%
+  mutate(
+    Sample = factor(
+      Sample,
+      levels = unique(Sample[order(
+        sub("[0-9]+$", "", Sample),
+        as.numeric(sub(".*?([0-9]+)$", "\\1", Sample))
+      )])
+    )
+  )
 
 # Confusion matrix
 confusion_mtx <- table(
-  Expected = unc.tma.rna.calls$Tumor.Model,
-  Called = unc.tma.rna.calls$BASE47.Subtype
+  Expected = unc.tma.rna.calls_formatted$Tumor.Model,
+  Called = unc.tma.rna.calls_formatted$BASE47.Subtype
 )
 confusion_mtx <- as.data.frame.matrix(confusion_mtx)
 
 
 # Waterfall plot
-wfall_basal_score <- ggplot(unc.tma.rna.calls, aes(x=Sample, y=Basal.Score, color=Tumor.Model, fill=Tumor.Model)) + 
+wfall_basal_score <- ggplot(unc.tma.rna.calls_formatted, aes(x=Sample, y=Basal.Score, color=Tumor.Model, fill=Tumor.Model)) + 
   geom_bar(stat = "identity") +
   scale_fill_hue(c = 40) +
   theme(legend.position="none") + theme_minimal() + coord_flip() + 
@@ -260,60 +274,71 @@ wfall_basal_score <- ggplot(unc.tma.rna.calls, aes(x=Sample, y=Basal.Score, colo
   x = "Sample",
   y = "Basal centroid score: Luminal = -1, Basal = +1"
 )
-wfall_basal_score
 ggsave("basal_score_waterfall.png", wfall_basal_score, width = 7, height = 5, dpi = 300)
+wfall_basal_score
 
 ```
-
-GATA3 + PPARG Activity Scoring
+Reproducing Kim data
 ```{r}
-BiocManager::install("GEOquery")
-BiocManager::install("impute")
-library(samr)
-library(GEOquery)
-library(limma)
+# GEO normalized matrix -> BASE47 RNAseq input format
 
-gse <- getGEO("GSE47993", GSEMatrix = TRUE)[[1]]
-expr <- exprs(gse)
-pdata <- pData(gse)
+kim_data <- read.delim("~/Documents/GitHub/mouse-models/BASE47/data/GSE160693_Normalized_Gene_Counts_Matrix.txt",
+                   row.names = 1, check.names = FALSE)
 
-expr_umuc9 <- expr[, c("GSM1164283","GSM1164284","GSM1164285",  # control samples
-           "GSM1164286","GSM1164287","GSM1164288") # rosi treated samples
-           ]
+# format for only gene names
+gene_symbols <- sub("\\|.*$", "", rownames(kim_data))
+kim_data <- kim_data[!duplicated(gene_symbols), ]      # dedupe rows first
+gene_symbols <- gene_symbols[!duplicated(gene_symbols)]  # matching dedupe on the vector
+rownames(kim_data) <- gene_symbols                 # now safe to assign
 
-# Get gene names from illumina probe IDs (they used IlluminaHT-12 V4.0 expression beadchip)
-anno <- fData(gse)
-gene_symbols <- anno[rownames(expr_umuc9), "Symbol"]
+#alt names
+alias_map <- c(ADIRF = "C10orf116", CAVIN3 = "PTRF", GAREM1 = "GAREM")
 
-# keep probes with valid gene symbols
-expr_annotated <- expr_umuc9[!is.na(gene_symbols) & gene_symbols != "", ]
-gene_symbols <- gene_symbols[!is.na(gene_symbols) & gene_symbols != ""]
-# Collapse multiple probes per gene
-expr_gene <- avereps(expr_annotated, ID = gene_symbols) # now have gene expression x sample matrix
+geo_lookup_id <- ifelse(base47_genes %in% names(alias_map),
+                         alias_map[base47_genes], base47_genes)
 
-sam_data <- list(
-  x = as.matrix(expr_gene),
-  y = c(1,1,1,2,2,2), #1=ctrl, #2=rosi-treated
-  geneid = rownames(expr_gene),
-  genenames = rownames(expr_gene),
-  logged2 = TRUE
-)
+# subset rnaseq to only base47 genes
+present <- geo_lookup_id %in% rownames(kim_data)
+if (any(!present)) {
+  warning("Missing from your data: ", paste(base47_genes[!present], collapse = ", "))
+}
 
-samr_obj <- samr(sam_data, resp.type = "Two class unpaired", nperms = 100)
-delta_table <- samr.compute.delta.table(samr_obj)
+test_matrix <- as.matrix(kim_data[geo_lookup_id[present], , drop = FALSE])
+rownames(test_matrix) <- base47_genes[present]
 
-# Choose a delta where median FDR < 0.05
-sig <- samr.compute.siggenes.table(
-  samr.obj = samr_obj,
-  del = chosen_delta,
-  data = sam_data,
-  delta.table = delta_table
-)
+test_input <- sweep(test_matrix, 1, apply(test_matrix, 1, median, na.rm = TRUE), "-")
+missing_genes <- setdiff(base47_genes, rownames(test_input))
+if (length(missing_genes) > 0) {
+  zero_rows <- matrix(0, nrow = length(missing_genes), ncol = ncol(test_input),
+                       dimnames = list(missing_genes, colnames(test_input)))
+  test_input <- rbind(test_input, zero_rows)
+}
+test_input <- test_input[base47_genes, ]
+stopifnot(all(abs(apply(test_input, 1, median, na.rm = TRUE)) < 1e-10))
 
-pparg_sig <- sig$genes.up[, "Gene Name"]
+write.table(test_input, "kimlab_BASE47_INPUT.txt",
+            sep = "\t", quote = FALSE, col.names = NA)
 
+# run base47
+x <- read.table("BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",sep="\t",row.names=1,header=T)
+classes <- as.vector(t(x[1,]))
+xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))})
+rownames(xn) <- rownames(x)[-1]
 
+rownames(xn)[rownames(xn) == "GAREM"]   <- "GAREM1"
+rownames(xn)[rownames(xn) == "PRKCDBP"] <- "CAVIN3"
+xn <- xn[base47_genes, ]
+
+test <- read.table("~/Documents/GitHub/mouse-models/BASE47/kimlab_BASE47_INPUT.txt", sep="\t",row.names=1,header=T)
+
+trainSet <- list(x=scale(xn), y=classes, geneid=rownames(xn), genenames=rownames(xn))
+mytrain <-pamr.train(trainSet)
+pred.class <- pamr.predict(mytrain,scale(test),0)
+pred.prob <- pamr.predict(mytrain,scale(test),0,type="posterior")
+unc.tma.rna.calls <- as.data.frame(cbind(pred.prob,pred.class))
+colnames(unc.tma.rna.calls) <- c("Basal.Correlation","Luminal.Correlation","BASE47.Subtype")
+unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 1] <- "Basal"
+unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 2] <- "Luminal"
 
 ```
-
 
