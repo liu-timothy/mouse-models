@@ -7,7 +7,7 @@ bulk RNA-seq per-sample expression matrix
 ↓
 normalized/log-transformed expression
 ↓
-47 BASE47 genes only
+subset to BASE47 genes only
 ↓
 RNA-seq BASE47 classifier
 ↓
@@ -38,6 +38,7 @@ library(tidyverse)
 
 
 ```
+
 BASE47 genes
 ```{r}
 #BASE47 genes
@@ -53,15 +54,15 @@ base47_genes <- c(
 ```
 
 PREPARE RNAseq Matrix into BASE47 input format
-- raw data for BBN+UPPL is cpm but BASE47 requires tpm
+- raw data for BBN+UPPL is cpm but BASE47 requires 90th percentile, log2(tpm+1)
 ```{r}
 #expression matrix load in
 RNAseq_raw <- read.table("~/Documents/GitHub/mouse-models/data/parental_mp1_K8HVZP-expression-matrix_cpm.csv", sep=",", row.names=1, header=T)
 
-#Drop protein-coding identity + counts columns // keep only cpm columns
+#Drop protein-coding identity + raw counts columns // keep only cpm columns
 RNAseq_raw <- RNAseq_raw[, !grepl("count|^gene_biotype", colnames(RNAseq_raw)    )    ]
 
-# Convert mouse ensembl id to human gene id (MANUALLY, b/c bioMarT was down)
+# mouse ensembl id to human gene id mapping (MANUALLY, b/c bioMarT was down)
 base47_mouse_map <- read.table(
   text = "
 ENSMUSG00000000093	TBX2
@@ -154,11 +155,11 @@ cpm_to_uq_log2 <- function(cpm_matrix) {
   log2(scaled + 1)
 }
 
-base47_uqlog2 <- cpm_to_uq_log2(RNAseq_raw_base47)
 base47_uqlog2 <- base47_uqlog2 %>% 
-  rename_with(~ str_remove(., "_cpm"), ends_with("_cpm"))
+  cpm_to_uq_log2() %>% 
+  rename_with(~ str_remove(., "_cpm"), ends_with("_cpm")) 
 
-#centers genes across samples
+#centers genes across samples to 0
 base47_input <- t(scale(t(base47_uqlog2), center = TRUE, scale = FALSE))
 
 #For each gene/row:
@@ -168,12 +169,14 @@ base47_input <- sweep(base47_uqlog2, 1, apply(base47_uqlog2, 1, median, na.rm = 
 # Every row median should now be exactly 0 (sanity check that matrix is converted correctly)
 stopifnot(all(abs(apply(base47_input, 1, median, na.rm = TRUE)) < 1e-10))
 
-rm(base47_mouse_map, RNAseq_raw, RNAseq_raw_base47)
+rm(base47_mouse_map, RNAseq_raw, RNAseq_raw_base47) #remove variables to save memory
 
 ```
 
 
-Download BASE47 classifier model
+Download BASE47 classifier model / Format input to BASE47
+- Mainly to download BASE47 model
+- Then format our dataframe so it can be used as an input for BASE47
 ```{r}
 # Load BASE47 RNA-seq prediction matrix
 download.file(
@@ -186,6 +189,7 @@ x <- read.table("BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",sep="\t",row.names=1,h
 classes <- as.vector(t(x[1,]))
 
 # removes 1st row, converts exp values to numeric, and restores gene names as row names
+# - b/c xn expects: gene x samples, so you can't have extraneous columns/rows
 xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))}) # xn is training expression matrix: genes by samples
 rownames(xn) <- rownames(x)[-1]
 
@@ -198,9 +202,8 @@ if (length(missing_genes) > 0) {
   stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
 }
 
-
 # if missing any genes, remove it from prediction matrix
-# rather than making expression=0
+# rather than making expression=0, you will instead classify using less than 47 genes instead
 common_genes <- intersect(rownames(base47_uqlog2), rownames(xn))
 
 # Optional: see what was removed
@@ -213,7 +216,11 @@ missing_from_predictor
 # Subset both matrices to the same genes, same order
 base47_uqlog2_matched <- base47_uqlog2[common_genes, , drop = FALSE]
 xn_matched <- xn[common_genes, , drop = FALSE]
+```
 
+BASE47 Classification
+- This was just copied from their own code
+```{r}
 # Classify BBN963+UPPL1541 RNAseq file
 df <- base47_input
 trainSet <- list(x=scale(xn_matched), y=classes, geneid=rownames(xn_matched), genenames=rownames(xn_matched))
@@ -229,7 +236,6 @@ write.csv(unc.tma.rna.calls, file="BASE47_classification_output.csv", row.names=
 ```
 
 Visual plot showing results
-
 ```{r}
 
 #Create new columns for expected mol subtype and its BASE47 call
@@ -278,7 +284,8 @@ ggsave("basal_score_waterfall.png", wfall_basal_score, width = 7, height = 5, dp
 wfall_basal_score
 
 ```
-Reproducing Kim data
+
+Reproducing Kim figure exactly
 ```{r}
 # GEO normalized matrix -> BASE47 RNAseq input format
 
@@ -335,10 +342,56 @@ trainSet <- list(x=scale(xn), y=classes, geneid=rownames(xn), genenames=rownames
 mytrain <-pamr.train(trainSet)
 pred.class <- pamr.predict(mytrain,scale(test),0)
 pred.prob <- pamr.predict(mytrain,scale(test),0,type="posterior")
-unc.tma.rna.calls <- as.data.frame(cbind(pred.prob,pred.class))
-colnames(unc.tma.rna.calls) <- c("Basal.Correlation","Luminal.Correlation","BASE47.Subtype")
-unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 1] <- "Basal"
-unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 2] <- "Luminal"
+unc.tma.rna.calls_kim <- as.data.frame(cbind(pred.prob,pred.class))
+colnames(unc.tma.rna.calls_kim) <- c("Basal.Correlation","Luminal.Correlation","BASE47.Subtype")
+unc.tma.rna.calls_kim$BASE47.Subtype[unc.tma.rna.calls_kim$BASE47.Subtype == 1] <- "Basal"
+unc.tma.rna.calls_kim$BASE47.Subtype[unc.tma.rna.calls_kim$BASE47.Subtype == 2] <- "Luminal"
+unc.tma.rna.calls_kim
+
+unc.tma.rna.calls_kim_formatted <- unc.tma.rna.calls_kim %>%
+  rownames_to_column("Sample") %>%
+  mutate(
+    Tumor.Model = case_when(
+      str_detect(Sample, "^BBN") ~ "BBN",
+      str_detect(Sample, "^UPPL") ~ "UPPL",
+      TRUE ~ NA_character_
+    ),
+    Basal.Score = Basal.Correlation - Luminal.Correlation
+  ) %>%
+  arrange(Basal.Score)
+
+#extra formatting sort alphabetically by sample name
+unc.tma.rna.calls_kim_formatted <- unc.tma.rna.calls_kim_formatted %>%
+  mutate(
+    Sample = factor(
+      Sample,
+      levels = unique(Sample[order(
+        sub("[0-9]+$", "", Sample),
+        as.numeric(sub(".*?([0-9]+)$", "\\1", Sample))
+      )])
+    )
+  )
+
+# Confusion matrix
+confusion_mtx <- table(
+  Expected = unc.tma.rna.calls_kim_formatted$Tumor.Model,
+  Called = unc.tma.rna.calls_kim_formatted$BASE47.Subtype
+)
+confusion_mtx <- as.data.frame.matrix(confusion_mtx)
+
+
+# Waterfall plot
+wfall_basal_score <- ggplot(unc.tma.rna.calls_kim_formatted, aes(x=Sample, y=Basal.Score, color=Tumor.Model, fill=Tumor.Model)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_hue(c = 40) +
+  theme(legend.position="none") + theme_minimal() + coord_flip() + 
+  labs(
+  x = "Sample",
+  y = "Basal centroid score: Luminal = -1, Basal = +1"
+)
+ggsave("basal_score_waterfall.png", wfall_basal_score, width = 7, height = 5, dpi = 300)
+wfall_basal_score
+
 
 ```
 

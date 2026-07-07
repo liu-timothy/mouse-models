@@ -17,7 +17,7 @@ library(GEOquery)
 library(limma)
 
 ```
-
+PPARG Signatures
 ```{r}
 gse <- getGEO("GSE47993", GSEMatrix = TRUE)[[1]]
 expr <- exprs(gse)
@@ -65,7 +65,7 @@ sig <- samr.compute.siggenes.table(
 )
 ```
 
-Results
+PPARG Results
 ```{r}
 # Significant upregulated genes AKA genes induced by rosi (downstream most likely)
 pparg_sig <- sig$genes.up[, "Gene Name"]
@@ -74,10 +74,23 @@ pparg_sig <- sig$genes.up[, "Gene Name"]
 sig$ngenes.up
 ```
 
+GATA3
+- Gene set already provided
+```{r}
+gata3_sig <- c(
+  "ADCY1", "GATA3", "GNAS", "IL13", "IL1A", "IL4", "IL5",
+  "JUNB", "MAF", "MAP2K3", "MAP2K6", "MAPK14", "NFATC1",
+  "PRKACB", "PRKACG", "PRKAR1A", "PRKAR1B", "PRKAR2A", "PRKAR2B"
+)
+
+```
+
 Format data
 ```{r}
 library(dplyr)
+library(tibble)
 library(stringr)
+library(babelgene)
 
 kim_data <- read.csv("~/Documents/GitHub/mouse-models/BASE47/data/GSE112973_rsem_normalized_Saito_2018.txt", sep="\t", header=T)
 kim_data <- kim_data %>% mutate(X=str_remove(X,"\\|.*")) %>% filter(!str_detect(X, "\\?"))
@@ -85,6 +98,7 @@ kim_data <- kim_data %>% distinct(X, .keep_all=TRUE)
 kim_data <- kim_data %>% column_to_rownames("X")
 # kim_data <- kim_data %>% dplyr::select(matches("derived_tumor_BBN963|derived_tumor_UPPL1541"))
 
+#Convert to log(tpm+1)
 cpm_to_uq_log2 <- function(cpm_matrix) {
   uq <- apply(cpm_matrix, 2, function(x) quantile(x[x > 0], 0.75))
   scaled <- sweep(cpm_matrix, 2, uq, "/") * 1000
@@ -92,12 +106,50 @@ cpm_to_uq_log2 <- function(cpm_matrix) {
 }
 kim_data_uqlog2 <- cpm_to_uq_log2(kim_data)
 
-# Convert from mouse to human orthologs
-library(babelgene)
-library(tibble)
+# ====
+# Convert from mouse to human orthologs (BASE47 uses human genes, not mouse)
+# ====
 
 #not sure why but the function doesn't work if you use the whole dataset, so i had to subset
 mouse_symbols <- unique(rownames(kim_data_uqlog2))[30:21704] 
+
+#Gets human ortholog for each mouse gene
+ortholog <- babelgene::orthologs(
+  genes = mouse_symbols,
+  species = "mouse",
+  human = FALSE,
+  top=TRUE
+)
+
+#Make new column for mouse genes
+kim_df <- kim_data_uqlog2
+kim_df$mouse_symbol <- rownames(kim_df)
+
+#Make new column for human genes
+kim_df$human_symbol <- ortholog$human_symbol[
+  match(kim_df$mouse_symbol, ortholog$symbol)
+]
+
+expr_input <- kim_df %>%
+  filter(!is.na(human_symbol), human_symbol != "") %>% #Filter out mouse genes that don't have human ortholog
+  group_by(human_symbol) %>% #group mouse genes that have same human ortholog
+  summarise(across(all_of(colnames(kim_data_uqlog2)), mean), .groups = "drop") %>% #avg expression within each human symbol
+  column_to_rownames("human_symbol")
+
+```
+
+My data
+```{r}
+# load in my data
+data <- read.csv("~/Documents/GitHub/mouse-models/BASE47/data/parental_mp1_K8HVZP-expression-matrix.csv", sep=",", header=T)
+data <- data[, !grepl("count|^gene_biotype|gene_id", colnames(data)    )    ]
+data <- data %>% distinct(gene_name, .keep_all=TRUE)
+rownames(data) <- data$gene_name
+data$gene_name <- NULL
+
+data_uqlog2 <- cpm_to_uq_log2(data)
+
+mouse_symbols <- unique(rownames(data_uqlog2))
 
 ortholog <- babelgene::orthologs(
   genes = mouse_symbols,
@@ -106,41 +158,49 @@ ortholog <- babelgene::orthologs(
   top=TRUE
 )
 
-kim_df <- kim_data_uqlog2
-kim_df$mouse_symbol <- rownames(kim_df)
-
-kim_df$human_symbol <- ortholog$human_symbol[
-  match(kim_df$mouse_symbol, ortholog$symbol)
+data_uqlog2$human_symbol <- ortholog$human_symbol[
+  match(rownames(data_uqlog2), ortholog$symbol)
 ]
 
-expr_cols <- colnames(kim_data_uqlog2)
+expr_cols <- setdiff(colnames(data_uqlog2), "human_symbol")
 
-kim_human_expr <- kim_df %>%
+expr_input <- data_uqlog2 %>%
   filter(!is.na(human_symbol), human_symbol != "") %>%
   group_by(human_symbol) %>%
-  summarise(across(all_of(expr_cols), mean), .groups = "drop") %>%
+  summarise(across(all_of(expr_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
   column_to_rownames("human_symbol")
 
 ```
 
 Calculate Signature Score
 ```{r}
+library(ggplot2)
 
 # get pparg genes found in rnaseq data
-genes_use <- intersect(pparg_sig, rownames(kim_human_expr))
+genes_use_pparg <- intersect(pparg_sig, rownames(expr_input))
 
-pparg_gene_z <- t(scale(t(kim_human_expr[genes_use, , drop = FALSE])))
+#get z score
+pparg_gene_z <- t(scale(t(expr_input[genes_use_pparg, , drop = FALSE])))
 pparg_score <- colMeans(pparg_gene_z, na.rm = TRUE)
 
 plot_df <- data.frame(
   sample = names(pparg_score),
   pparg_score = pparg_score
 ) %>%
-  filter(str_detect(sample, "cell_line_derived_tumor_BBN963|cell_line_derived_tumor_UPPL1541")) %>%
+  filter(str_detect(sample, "cell_line_derived_tumor_BBN963|cell_line_derived_tumor_UPPL1541")) %>% #get only bbn963+uppl1541 samples
   mutate(model = case_when(
     str_detect(sample, "BBN963") ~ "BBN963",
     str_detect(sample, "UPPL1541") ~ "UPPL1541"
   ))
+
+# plot_df <- data.frame(
+#   sample = names(pparg_score),
+#   pparg_score = pparg_score
+# ) %>%
+#   mutate(model = case_when( #group by BBN and UPPL samples
+#     str_detect(sample, "BBN963") ~ "BBN963",
+#     str_detect(sample, "UPPL1541") ~ "UPPL1541"
+#   ))
 
 ggplot(plot_df, aes(x = model, y = pparg_score, color=grepl("BBN", sample))) + 
   stat_boxplot(geom = "errorbar", width = 0.2) + 
@@ -156,5 +216,71 @@ ggplot(plot_df, aes(x = model, y = pparg_score, color=grepl("BBN", sample))) +
 ```
 Calculate GATA3
 ```{r}
+genes_use_gata3 <- intersect(gata3_sig, rownames(expr_input))
 
+gata3_gene_z <- t(scale(t(expr_input[genes_use_gata3, , drop = FALSE])))
+gata3_score <- colMeans(pparg_gene_z, na.rm = TRUE)
+
+plot_df <- data.frame(
+  sample = names(gata3_score),
+  gata3_score = gata3_score
+) %>%
+  filter(str_detect(sample, "cell_line_derived_tumor_BBN963|cell_line_derived_tumor_UPPL1541")) %>% #get only bbn963+uppl1541 samples
+  mutate(model = case_when(
+    str_detect(sample, "BBN963") ~ "BBN963",
+    str_detect(sample, "UPPL1541") ~ "UPPL1541"
+  ))
+
+ggplot(plot_df, aes(x = model, y = gata3_score, color=grepl("BBN", sample))) + 
+  stat_boxplot(geom = "errorbar", width = 0.2) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.08, height = 0) +
+  ylab("GATA3 Signature Z-score") +
+  xlab("") + 
+  labs(
+    title="GATA3 Activity"
+  ) + 
+  theme(legend.position = "none")
+```
+Training on our own UMUC datasets
+```{r}
+expr_umuc_rt <- read.delim("~/Documents/GitHub/mouse-models/BASE47/data/rosi_counts_tpm_gene_id.tsv", row.names=1)
+
+expr_umuc9 <- expr[, c("GSM1164283","GSM1164284","GSM1164285",  # control samples
+           "GSM1164286","GSM1164287","GSM1164288") # rosi treated samples
+           ]
+
+# TODO: turn into gene expression x sample
+# convert mouse to human genes
+
+expr_matrix <- avereps(expr_annotated, ID = gene_symbols) # now have gene expression x sample matrix
+
+group_labels <- c(1,1,1,2,2,2) #1=ctrl, #2=rosi-treated
+  
+
+sam_data <- list(
+  x = expr_matrix, 
+  y = group_labels,
+  geneid = rownames(expr_matrix),
+  genenames = rownames(expr_matrix),
+  logged2 = TRUE
+)
+
+samr_obj <- samr(
+  data=sam_data, resp.type = "Two class unpaired", nperms = 100)
+delta_table <- samr.compute.delta.table(samr_obj)
+
+
+# Choose a delta where median FDR < 0.05
+# -b/c delta != FDR
+delta_df <- as.data.frame(delta_table)
+chosen_delta <- delta_df[delta_df[, "median FDR"] < 0.05, "delta"][1]
+
+# get significant genes in rosi vs ctrl
+sig <- samr.compute.siggenes.table(
+  samr.obj = samr_obj,
+  del = chosen_delta,
+  data = sam_data,
+  delta.table = delta_table
+)
 ```
