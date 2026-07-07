@@ -1,0 +1,14 @@
+GATA3_PPARG_Scoring/
+|-- data/
+|-- results/
+|   `-- plots/
+`-- scripts/
+    `-- run_gata3_pparg_files/
+        |-- figure-html/
+        `-- libs/
+            |-- bootstrap/
+            |-- clipboard/
+            `-- quarto-html/
+                `-- tabsets/
+
+Note: Hidden system, RStudio session, and Git metadata directories are omitted.
