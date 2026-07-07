@@ -1,0 +1,318 @@
+---
+title: "GATA3/PPARG Scoring"
+format: html
+editor: visual
+---
+
+## Setup
+
+```{r}
+#| echo: false
+
+library(here)
+# here::i_am("README.Rmd")
+
+install.packages(c("tidyverse", "here", "samr", "ggplot2"))
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+BiocManager::install(c("GEOquery", "impute"))
+library(here)
+library(samr)
+library(GEOquery)
+library(limma)
+
+# =========
+# Functions
+# =========
+
+#Convert to 90th percentile of log(tpm+1)
+cpm_to_uq_log2 <- function(cpm_matrix) {
+  uq <- apply(cpm_matrix, 2, function(x) quantile(x[x > 0], 0.75))
+  scaled <- sweep(cpm_matrix, 2, uq, "/") * 1000
+  log2(scaled + 1)
+}
+```
+
+## Get PPARG Signatures (their data)
+
+```{r}
+#| echo: false
+gse <- getGEO("GSE47993", GSEMatrix = TRUE)[[1]]
+expr <- exprs(gse)
+
+expr_umuc9 <- expr[, c("GSM1164283","GSM1164284","GSM1164285",  # control samples
+                       "GSM1164286","GSM1164287","GSM1164288") # rosi treated samples
+]
+
+# Get gene names from illumina probe IDs (they used IlluminaHT-12 V4.0 expression beadchip)
+anno <- fData(gse)
+gene_symbols <- anno[rownames(expr_umuc9), "Symbol"]
+
+# keep probes with valid gene symbols
+expr_annotated <- expr_umuc9[!is.na(gene_symbols) & gene_symbols != "", ]
+gene_symbols <- gene_symbols[!is.na(gene_symbols) & gene_symbols != ""]
+# Collapse multiple probes per gene
+expr_matrix <- avereps(expr_annotated, ID = gene_symbols) # now have gene expression x sample matrix
+group_labels <- c(1,1,1,2,2,2) #1=ctrl, #2=rosi-treated
+
+
+sam_data <- list(
+  x = expr_matrix, 
+  y = group_labels,
+  geneid = rownames(expr_matrix),
+  genenames = rownames(expr_matrix),
+  logged2 = TRUE
+)
+
+samr_obj <- samr(
+  data=sam_data, resp.type = "Two class unpaired", nperms = 100)
+delta_table <- samr.compute.delta.table(samr_obj)
+
+
+# Choose a delta where median FDR < 0.05
+# -b/c delta != FDR
+delta_df <- as.data.frame(delta_table)
+chosen_delta <- delta_df[delta_df[, "median FDR"] < 0.05, "delta"][1]
+
+# get significant genes in rosi vs ctrl
+sig <- samr.compute.siggenes.table(
+  samr.obj = samr_obj,
+  del = chosen_delta,
+  data = sam_data,
+  delta.table = delta_table
+)
+```
+
+**PPARG Signatures**
+
+```{r}
+# Significant upregulated genes AKA genes induced by rosi (downstream most likely)
+pparg_sig <- sig$genes.up[, "Gene Name"]
+head(pparg_sig)
+
+#number of genes upregulated
+sig$ngenes.up
+```
+
+**GATA3 Signatures**
+
+```{r}
+gata3_sig <- c(
+  "ADCY1", "GATA3", "GNAS", "IL13", "IL1A", "IL4", "IL5",
+  "JUNB", "MAF", "MAP2K3", "MAP2K6", "MAPK14", "NFATC1",
+  "PRKACB", "PRKACG", "PRKAR1A", "PRKAR1B", "PRKAR2A", "PRKAR2B"
+)
+```
+
+**Load + Format Data**
+
+```{r}
+data <- read.csv(here("data", "parental_mp1_K8HVZP-expression-matrix.csv"), sep=",", header=T)
+data <- data[, !grepl("count|^gene_biotype|gene_id", colnames(data)    )    ]
+data <- data %>% distinct(gene_name, .keep_all=TRUE)
+rownames(data) <- data$gene_name
+data$gene_name <- NULL
+
+data_uqlog2 <- cpm_to_uq_log2(data)
+
+mouse_symbols <- unique(rownames(data_uqlog2))
+
+ortholog <- babelgene::orthologs(
+  genes = mouse_symbols,
+  species = "mouse",
+  human = FALSE,
+  top=TRUE
+)
+
+data_uqlog2$human_symbol <- ortholog$human_symbol[
+  match(rownames(data_uqlog2), ortholog$symbol)
+]
+
+expr_cols <- setdiff(colnames(data_uqlog2), "human_symbol")
+
+expr_input <- data_uqlog2 %>%
+  filter(!is.na(human_symbol), human_symbol != "") %>%
+  group_by(human_symbol) %>%
+  summarise(across(all_of(expr_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  column_to_rownames("human_symbol")
+```
+
+```{r}
+plot_signature_activity <- function(score_vec,
+                                    signature_label = "PPARG",
+                                    plot_title = NULL,
+                                    y_axis_label = NULL) {
+  
+  plot_df <- data.frame(
+    sample = names(score_vec),
+    score = as.numeric(score_vec)
+  ) %>%
+    mutate(
+      model = case_when(
+        str_detect(sample, "BBN963") ~ "BBN963",
+        str_detect(sample, "UPPL1541") ~ "UPPL1541",
+        TRUE ~ NA_character_
+      ),
+      subtype = case_when(
+        str_detect(sample, regex("parental", ignore_case = TRUE)) ~ "Parental",
+        str_detect(sample, regex("MP1", ignore_case = TRUE)) ~ "MP1",
+        TRUE ~ NA_character_
+      )
+    )
+  
+  if (is.null(plot_title)) {
+    plot_title <- paste(signature_label, "Activity")
+  }
+  
+  if (is.null(y_axis_label)) {
+    y_axis_label <- paste(signature_label, "Signature Z-score")
+  }
+  
+  ggplot(plot_df, aes(x = model, y = score)) + 
+    stat_boxplot(
+      geom = "errorbar",
+      width = 0.2,
+      color = "black"
+    ) + 
+    geom_boxplot(
+      outlier.shape = NA,
+      color = "black",
+      fill = "white"
+    ) +
+    geom_jitter(
+      aes(color = subtype),
+      width = 0.08,
+      height = 0,
+      size = 2
+    ) +
+    ylab(y_axis_label) +
+    xlab("") + 
+    labs(
+      title = plot_title,
+      color = ""
+    ) + 
+    theme_classic() +
+    theme(plot.title = element_text(face = "bold"))
+}
+```
+
+**Calculate PPARG Signature Score**
+
+```{r}
+library(ggplot2)
+
+# get pparg genes found in rnaseq data
+genes_use_pparg <- intersect(pparg_sig, rownames(expr_input))
+
+#get z score
+pparg_gene_z <- t(scale(t(expr_input[genes_use_pparg, , drop = FALSE])))
+pparg_score <- colMeans(pparg_gene_z, na.rm = TRUE)
+
+plot_signature_activity(
+  score_vec = pparg_score,
+  signature_label = "PPARG",
+  plot_title="PPARG Activity"
+)
+```
+
+**Calculate GATA3**
+
+```{r}
+genes_use_gata3 <- intersect(gata3_sig, rownames(expr_input))
+
+gata3_gene_z <- t(scale(t(expr_input[genes_use_gata3, , drop = FALSE])))
+gata3_score <- colMeans(pparg_gene_z, na.rm = TRUE)
+
+plot_signature_activity(
+  score_vec = gata3_score,
+  signature_label = "GATA3",
+  plot_title="GATA3 Activity"
+)
+```
+
+**Get significantly upregulated genes from our Rosi-treated Datasets**
+
+- u1 = umuc1
+- u6 = umuc6
+- u14 = umuc14
+- rt = rt112
+
+```{r}
+#| echo:false
+library(dplyr)
+library(tibble)
+library(stringr)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+#load in tpm data and convert to log2(tpm+1)
+tpm_umuc_rt_rosi_tpm <- read.delim("~/Documents/GitHub/mouse-models/BASE47/data/rosi_counts_tpm_gene_id.tsv", row.names=1)
+tpm_umuc_rt_rosi_tpm <- tpm_umuc_rt_rosi_tpm[, !grepl("_N_", names(tpm_umuc_rt_rosi_tpm))]
+tpm_umuc_rt_rosi_log2 <- log2(tpm_umuc_rt_rosi_tpm + 1)
+
+#get ensembl id without . 
+umuc_rt_rosi_ensembl_genes <- sub("\\.\\d+$", "", rownames(tpm_umuc_rt_rosi_log2))
+
+#get human gene names mapping
+symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = umuc_rt_rosi_ensembl_genes,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+y <- ifelse(grepl("_R_", colnames(tpm_umuc_rt_rosi_log2)), 1,
+            ifelse(grepl("_U_", colnames(tpm_umuc_rt_rosi_log2)), 2, NA))
+
+stopifnot(!any(is.na(y)))
+stopifnot(length(y) == ncol(tpm_umuc_rt_rosi_log2))
+
+sam_data <- list(
+  x = as.matrix(tpm_umuc_rt_rosi_log2),
+  y = y,
+  geneid = rownames(tpm_umuc_rt_rosi_log2),
+  genenames = symbols,
+  logged2 = TRUE
+)
+
+samr_obj <- samr(
+  data=sam_data, resp.type = "Two class unpaired", nperms = 100)
+delta_table <- samr.compute.delta.table(samr_obj)
+
+
+# Choose a delta where median FDR < 0.05
+# -b/c delta != FDR
+delta_df <- as.data.frame(delta_table)
+chosen_delta <- delta_df[delta_df[, "median FDR"] < 0.05, "delta"][1]
+
+# get significant genes in rosi vs ctrl
+sig <- samr.compute.siggenes.table(
+  samr.obj = samr_obj,
+  del = chosen_delta,
+  data = sam_data,
+  delta.table = delta_table
+)
+
+```
+
+s
+
+```{r}
+test_sig <- sig$genes.up
+
+genes_use_pparg <- intersect(test_sig, rownames(expr_input))
+
+#get z score
+pparg_gene_z <- t(scale(t(expr_input[genes_use_pparg, , drop = FALSE])))
+pparg_score <- colMeans(pparg_gene_z, na.rm = TRUE)
+
+plot_signature_activity(
+  score_vec = pparg_score,
+  signature_label = "PPARG",
+  plot_title="PPARG Activity from UMUC6 Significant Genes"
+)
+```
