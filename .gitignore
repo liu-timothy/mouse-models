@@ -2,3 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# R temporary files
+GATA3_PPARG_Scoring/.RDataTmp2
+*.RDataTmp*
+.RDataTmp*
