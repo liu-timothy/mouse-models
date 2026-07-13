@@ -662,10 +662,7 @@ plot_signature_bbn_vs_uppl <- function(score_df,
   if (is.null(plot_title)) {
     plot_title <- paste0(signature_label, " Activity: ", parental_filter, " Only")
   }
-  
-  if (is.null(y_axis_label)) {
-    y_axis_label <- paste(signature_label, "Signature Z-Score")
-  }
+
   
   score_df <- score_df %>%
     filter(parental == parental_filter) %>%
@@ -712,7 +709,7 @@ plot_signature_bbn_vs_uppl <- function(score_df,
     labs(
       title = plot_title,
       x = NULL,
-      y = y_axis_label,
+      y = paste(signature_label, "Signature Z-Score"),
       color = NULL
     ) +
     theme_classic(base_size = 12) +
@@ -915,7 +912,7 @@ plot_signature_activity(
 plot_signature_bbn_vs_uppl(umuc9_pparg_score_df,
                            signature_label = "PPARG",
                            parental_filter = "Parental",
-                           color_group = "cell_model",
+                           # color_group = "cell_model",
                            plot_title = "PPARG (UMUC9) Activity of Parentals",
                            out_file = NULL,
                            save_plot = TRUE,
@@ -927,7 +924,7 @@ plot_signature_bbn_vs_uppl(umuc9_pparg_score_df,
 plot_signature_bbn_vs_uppl(umuc9_pparg_score_df,
                            signature_label = "PPARG",
                            parental_filter = "MP1",
-                           color_group = "cell_model",
+                           # color_group = "cell_model",
                            plot_title = "PPARG (UMUC9) Activity of MP1",
                            out_file = NULL,
                            save_plot = TRUE,
@@ -980,7 +977,6 @@ plot_signature_activity(
 plot_signature_bbn_vs_uppl(gata3_scores_df,
                            signature_label = "GATA3",
                            parental_filter = "Parental",
-                           color_group = "cell_model",
                            plot_title = "GATA3 Activity of Parentals",
                            out_file = NULL,
                            save_plot = TRUE,
@@ -992,7 +988,6 @@ plot_signature_bbn_vs_uppl(gata3_scores_df,
 plot_signature_bbn_vs_uppl(gata3_scores_df,
                            signature_label = "GATA3",
                            parental_filter = "MP1",
-                           color_group = "cell_model",
                            plot_title = "GATA3 Activity of MP1",
                            out_file = NULL,
                            save_plot = TRUE,
@@ -1160,6 +1155,198 @@ plot_signature_parental_vs_mp1(
 )
 ```
 
+Run SAM on 4 lines separately:
+
+```{r}
+# Cell-line identifiers in the sample names
+cell_lines <- c(
+  umuc1  = "u1",
+  umuc6  = "u6",
+  umuc14 = "u4",
+  rt112  = "r1"
+)
+
+run_cell_line_sam <- function(cell_line_id,
+                              expression_data,
+                              gene_symbols,
+                              fdr_cutoff = 0.05,
+                              nperms = 100) {
+  
+  # Match the cell-line ID as a complete underscore-separated token
+  # This prevents "u1" from matching "u14"
+  cell_line_pattern <- paste0("(^|_)", cell_line_id, "(_|$)")
+  
+  keep_samples <- grepl(
+    cell_line_pattern,
+    colnames(expression_data),
+    ignore.case = TRUE
+  )
+  
+  cell_line_expression <- expression_data[, keep_samples, drop = FALSE]
+  
+  if (ncol(cell_line_expression) == 0) {
+    stop("No samples found for cell line: ", cell_line_id)
+  }
+  
+  # Rosi treatment = 1; untreated control = 2
+  treatment_labels <- ifelse(
+    grepl("_R_", colnames(cell_line_expression)),
+    1,
+    ifelse(
+      grepl("_U_", colnames(cell_line_expression)),
+      2,
+      NA
+    )
+  )
+  
+  if (anyNA(treatment_labels)) {
+    stop(
+      "Could not assign treatment labels for: ",
+      paste(colnames(cell_line_expression)[is.na(treatment_labels)],
+            collapse = ", ")
+    )
+  }
+  
+  if (!all(c(1, 2) %in% treatment_labels)) {
+    stop(
+      "Cell line ", cell_line_id,
+      " does not contain both rosi and control samples."
+    )
+  }
+  
+  sam_data <- list(
+    x = as.matrix(cell_line_expression),
+    y = treatment_labels,
+    geneid = rownames(cell_line_expression),
+    genenames = gene_symbols,
+    logged2 = TRUE
+  )
+  
+  samr_obj <- quiet(
+    samr(
+      data = sam_data,
+      resp.type = "Two class unpaired",
+      nperms = nperms
+    )
+  )
+  
+  delta_table <- quiet(
+    samr.compute.delta.table(samr_obj)
+  )
+  
+  delta_df <- as.data.frame(delta_table)
+  
+  eligible_deltas <- delta_df[
+    !is.na(delta_df[["median FDR"]]) &
+      delta_df[["median FDR"]] < fdr_cutoff,
+    "delta"
+  ]
+  
+  if (length(eligible_deltas) == 0) {
+    warning(
+      "No delta produced a median FDR below ",
+      fdr_cutoff,
+      " for cell line ",
+      cell_line_id
+    )
+    
+    return(list(
+      siggenes = NULL,
+      chosen_delta = NA_real_,
+      delta_table = delta_table,
+      samr_obj = samr_obj,
+      samples = colnames(cell_line_expression)
+    ))
+  }
+  
+  chosen_delta <- eligible_deltas[1]
+  
+  siggenes <- samr.compute.siggenes.table(
+    samr.obj = samr_obj,
+    del = chosen_delta,
+    data = sam_data,
+    delta.table = delta_table
+  )
+  
+  list(
+    siggenes = siggenes,
+    chosen_delta = chosen_delta,
+    delta_table = delta_table,
+    samr_obj = samr_obj,
+    samples = colnames(cell_line_expression)
+  )
+}
+
+# Run a separate SAM analysis for each cell line
+rosi_sam_results <- lapply(
+  cell_lines,
+  run_cell_line_sam,
+  expression_data = tpm_umuc_rt_rosi_log2,
+  gene_symbols = umuc_rt112_gene_symbols,
+  fdr_cutoff = 0.05,
+  nperms = 100
+)
+
+# Four significant-gene table objects
+umuc1_siggenes  <- rosi_sam_results$umuc1$siggenes$genes.up[, "Gene Name"]
+umuc6_siggenes  <- rosi_sam_results$umuc6$siggenes$genes.up[, "Gene Name"]
+umuc14_siggenes <- rosi_sam_results$umuc14$siggenes$genes.up[, "Gene Name"]
+rt112_siggenes  <- rosi_sam_results$rt112$siggenes$genes.up[, "Gene Name"]
+```
+
+```{r}
+# install.packages("ComplexUpset")
+
+library(ComplexUpset)
+library(ggplot2)
+
+upregulated_gene_sets <- list(
+  UMUC1  = unique(na.omit(umuc1_siggenes)),
+  UMUC6  = unique(na.omit(umuc6_siggenes)),
+  UMUC14 = unique(na.omit(umuc14_siggenes)),
+  RT112  = unique(na.omit(rt112_siggenes)),
+  UMUC9 = unique(na.omit(umuc9_rosi_upregulated_genes))
+)
+
+all_genes <- sort(unique(unlist(upregulated_gene_sets)))
+
+upset_data <- data.frame(
+  gene = all_genes,
+  UMUC1 = all_genes %in% upregulated_gene_sets$UMUC1,
+  UMUC6 = all_genes %in% upregulated_gene_sets$UMUC6,
+  UMUC14 = all_genes %in% upregulated_gene_sets$UMUC14,
+  RT112 = all_genes %in% upregulated_gene_sets$RT112,
+  UMUC9 = all_genes %in% upregulated_gene_sets$UMUC9
+)
+
+upset_plot <- ComplexUpset::upset(
+  upset_data,
+  intersect = c("UMUC1", "UMUC6", "UMUC14", "RT112", "UMUC9"),
+  name = "Cell line",
+  min_size = 0,
+  sort_intersections_by = c("degree", "cardinality"),
+  base_annotations = list(
+    "Intersection size" =
+      intersection_size(counts = TRUE)
+  ),
+  set_sizes = (
+    upset_set_size() +
+      ylab("Upregulated genes")
+  )
+) +
+  ggtitle("Overlap of significantly upregulated genes")
+
+upset_plot
+
+ggsave(
+  here("results","plots","rosi_upregulated_genes_upset_plot.png"),
+  upset_plot,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
 Overlapping Significantly Upregulated Genes between UMUC9 and UMUCs+RT112
 
 ```{r}
@@ -1170,7 +1357,7 @@ library(ggrepel)
 umuc_rt112_pparg_signature
 
 genes_use_pparg
-highlight_genes <- c("TP53", "BRCA1", "NECTIN4", "FABP4")
+highlight_genes <- c("TP53", "BRCA1", "NECTIN4", "FABP4", "GATA3", "KRT6", "KRT14", "KRT20", "PPARG")
 
 umuc9_only <- setdiff(genes_use_pparg, umuc_rt112_pparg_signature)
 umuc_rt112_only <- setdiff(umuc_rt112_pparg_signature, genes_use_pparg)
