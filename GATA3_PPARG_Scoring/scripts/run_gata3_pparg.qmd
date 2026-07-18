@@ -50,7 +50,7 @@ quiet <- function(expr) {
 }
 ```
 
-## Derive Public Rosiglitazone-Induced PPARγ Pathway Signature from GSE47993
+# Derive Public Rosiglitazone-Induced PPARγ Pathway Signature from GSE47993
 
 1.  Downloads public FABP4-modulation GEO dataset GSE47993
 2.  Subset to only UMUC9 control and rosi-treated samples

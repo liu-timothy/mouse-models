@@ -7,3 +7,7 @@
 GATA3_PPARG_Scoring/.RDataTmp2
 *.RDataTmp*
 .RDataTmp*
+
+# HDF5 data files
+*.h5
+*.h5ad

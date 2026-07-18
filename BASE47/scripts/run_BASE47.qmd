@@ -1,10 +1,13 @@
 ---
 title: "run_BASE47"
-format: html
+format:
+  html:
+    code-tools: true
+    code-link: true
 editor: visual
 ---
 
-## Quarto
+# Workflow
 
 bulk RNA-seq per-sample expression matrix
 
@@ -24,9 +27,13 @@ RNA-seq BASE47 classifier
 
 Basal vs Luminal call per sample
 
-**Setup**
+# **Setup**
 
 ```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
@@ -47,11 +54,9 @@ library(here)
 library(DESeq2)
 library(pamr)
 library(tidyverse)
-
-
 ```
 
-BASE47 Genes
+## **BASE47 Genes**
 
 ```{r}
 base47_genes <- c(
@@ -64,6 +69,8 @@ base47_genes <- c(
   "TUBB6", "CAVIN3", "AHNAK2", "RAB15", "FAM174B"
 )
 ```
+
+# **RNAseq Input**
 
 ```{r}
 #expression matrix load in
@@ -133,7 +140,8 @@ RNAseq_raw_base47 <- RNAseq_raw %>%
   as.data.frame() %>%
   rownames_to_column("mouse_ensembl") %>%
   dplyr::mutate(mouse_ensembl_clean = sub("\\..*$", "", mouse_ensembl)) %>%
-  dplyr::inner_join( #filter to only BASE47 genes
+  #filter RNAseq input to only BASE47 genes
+  dplyr::inner_join(                    
     base47_mouse_map %>%
       dplyr::filter(mouse_ensembl != "NONE") %>%
       dplyr::select(mouse_ensembl, human_gene),
@@ -141,17 +149,23 @@ RNAseq_raw_base47 <- RNAseq_raw %>%
   ) %>%
   dplyr::select(-dplyr::any_of(c("mouse_ensembl", "mouse_ensembl_clean", "gene_type"))) %>%
   column_to_rownames("human_gene")
+
 RNAseq_raw_base47$gene_name <- NULL
 
 # mouse genes that didn't have human ortholog
-missing_genes <- setdiff(
+missing_human_genes <- setdiff(
   base47_mouse_map$human_gene,
   rownames(RNAseq_raw_base47)
 )
-missing_genes
+if (length(missing_human_genes) > 0) {
+  cat(
+    "Genes that didn't have human ortholog:",
+    paste(missing_human_genes, collapse = ", "),
+    "\n"
+  )
+}
 
 # Ensure matrix is numeric
-RNAseq_raw_base47 <- as.data.frame(RNAseq_raw_base47)
 RNAseq_raw_base47[] <- lapply(RNAseq_raw_base47, as.numeric)
 
 # Convert cpm to log2 upper quartile-normalized expression (that's how they did it in their methods)
@@ -169,18 +183,17 @@ base47_uqlog2 <- RNAseq_raw_base47 %>%
   cpm_to_uq_log2() %>% 
   rename_with(~ str_remove(., "_cpm"), ends_with("_cpm")) 
 
-#centers genes across samples to 0
-base47_input <- t(scale(t(base47_uqlog2), center = TRUE, scale = FALSE))
-
-#For each gene/row:
-#   centered value = sample value - median expression of that gene across samples
+# median-center every gene by subtracting its row median from every sample (median-centers)
 base47_input <- sweep(base47_uqlog2, 1, apply(base47_uqlog2, 1, median, na.rm = TRUE), "-")
 
 # Every row median should now be exactly 0 (sanity check that matrix is converted correctly)
 stopifnot(all(abs(apply(base47_input, 1, median, na.rm = TRUE)) < 1e-10))
 
-rm(base47_mouse_map, RNAseq_raw, RNAseq_raw_base47) #remove variables to save memory
+#remove variables to save memory
+# rm(base47_mouse_map, RNAseq_raw, RNAseq_raw_base47)
 ```
+
+# **Load predictor**
 
 ```{r}
 # Load BASE47 RNA-seq prediction matrix
@@ -188,24 +201,29 @@ download.file(
   "https://raw.githubusercontent.com/kimlabunc/Kardos_Rose_NanoString/main/BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",
   destfile = "BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt"
 )
+
+# ==================
+# x = RNAseq training/predictor matrix
+# ==================
 x <- read.table("BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",sep="\t",row.names=1,header=T)
 
 # gets labels for subtypes from 1ST ROW where: 1 = Basal; 2=Luminal
 classes <- as.vector(t(x[1,]))
 
-# removes 1st row, converts exp values to numeric, and restores gene names as row names
-# - b/c xn expects: gene x samples, so you can't have extraneous columns/rows
+# removes 1st row, converts expression values to numeric, and restores gene names as row names
+#     b/c xn expects: ONLY gene x samples, so you can't have extraneous columns/rows
 xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))}) # xn is training expression matrix: genes by samples
 rownames(xn) <- rownames(x)[-1]
 
 missing_genes <- setdiff(rownames(xn), rownames(base47_input))
 
 #Checks for missing BASE47 genes in our data
-# - it's ok if it stops the script, it's just mainly to let you know which ones are missing
-# - if missing any genes, then run the BASE47 classifier on only the genes we have, rather than making the expression=0 for that missing gene
-if (length(missing_genes) > 0) {
-  stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
-}
+#     it's ok if it stops the script, it's just mainly to let you know which ones are missing
+#     if missing any genes, then run the BASE47 classifier on only the genes we have, rather than making the expression=0 for that missing gene
+
+# if (length(missing_genes) > 0) {
+#   stop("Missing BASE47 genes from df: ", paste(missing_genes, collapse = ", "))
+# }
 
 # if missing any genes, remove it from prediction matrix
 # rather than making expression=0, you will instead classify using less than 47 genes instead
@@ -213,15 +231,16 @@ common_genes <- intersect(rownames(base47_uqlog2), rownames(xn))
 
 # Optional: see what was removed
 missing_from_sample <- setdiff(rownames(xn), rownames(base47_uqlog2))
-missing_from_predictor <- setdiff(rownames(base47_uqlog2), rownames(xn))
-
-missing_from_sample
-missing_from_predictor
+if (length(missing_from_sample) > 0) {
+  cat("Missing from RNAseq input:", paste(missing_from_sample, collapse = ", "), "\n")
+}
 
 # Subset both matrices to the same genes, same order
 base47_uqlog2_matched <- base47_uqlog2[common_genes, , drop = FALSE]
 xn_matched <- xn[common_genes, , drop = FALSE]
 ```
+
+# **Molecular Subtype Classifier**
 
 ```{r}
 # Classify BBN963+UPPL1541 RNAseq file
@@ -237,6 +256,8 @@ unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 2] <- "Lumi
 
 write.csv(unc.tma.rna.calls, file="BASE47_classification_output.csv", row.names=TRUE)
 ```
+
+# **Plots**
 
 ```{r}
 #Create new columns for expected mol subtype and its BASE47 call
@@ -270,17 +291,41 @@ confusion_mtx <- table(
   Called = unc.tma.rna.calls_formatted$BASE47.Subtype
 )
 confusion_mtx <- as.data.frame.matrix(confusion_mtx)
-
+write.csv(confusion_mtx, 
+          file=here("outs","confusion_matrix.csv"),
+          row.names=TRUE)
+confusion_mtx
 
 # Waterfall plot
-wfall_basal_score <- ggplot(unc.tma.rna.calls_formatted, aes(x=Sample, y=Basal.Score, color=Tumor.Model, fill=Tumor.Model)) + 
+wfall_basal_score <- ggplot(
+  unc.tma.rna.calls_formatted,
+  aes(
+    x = Sample,
+    y = Basal.Score,
+    color = Tumor.Model,
+    fill = Tumor.Model
+  )
+) +
   geom_bar(stat = "identity") +
   scale_fill_hue(c = 40) +
-  theme(legend.position="none") + theme_minimal() + coord_flip() + 
+  coord_flip() +
   labs(
+    title = "BASE47 Molecular Subtype Classification\nof BBN963 and UPPL1541 Samples",
     x = "Sample",
-    y = "Basal centroid score: Luminal = -1, Basal = +1"
+    y = "Basal centroid score: Luminal = -1, Basal = +1",
+    fill = "Tumor Model",
+    color = "Tumor Model"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    )
   )
+
 ggsave(here("outs","basal_score_waterfall.png"), wfall_basal_score, width = 7, height = 5, dpi = 300)
+
 wfall_basal_score
 ```
