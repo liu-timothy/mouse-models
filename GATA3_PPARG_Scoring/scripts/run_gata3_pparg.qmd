@@ -34,6 +34,9 @@ library(tidyverse)
 # Functions
 # =========
 
+# plotting functions stored separately
+source(here::here("scripts", "gata3_pparg_plot_functions.R"))
+
 #Convert to 90th percentile of log(tpm+1)
 cpm_to_uq_log2 <- function(cpm_matrix) {
   uq <- apply(cpm_matrix, 2, function(x) quantile(x[x > 0], 0.75))
@@ -192,1093 +195,6 @@ humanized_mouse_expr <- mouse_uqlog2_expr %>%
 - Creates boxplot with jittered sample-level points
 - Saves plot to `results/plots/` and also returns plot object
 
-```{r}
-# Formats z-score into dataframe that can be used for plotting
-
-format_score <- function(score_vec, signature_label) {
-  if (!is.character(signature_label) ||
-      length(signature_label) != 1 ||
-      is.na(signature_label) ||
-      signature_label == "") {
-    stop("signature_label must be a single string.")
-  }
-  
-  if (is.null(names(score_vec))) {
-    stop("score_vec must be a named vector.")
-  }
-  
-  score_col <- paste0(signature_label, "_z_score")
-  sample_names <- names(score_vec)
-  
-  score_df <- data.frame(
-    cell_line = sub("_.*", "", sample_names),
-    parental = ifelse(grepl("_PARENTAL_", sample_names), "Parental", "MP1"),
-    score_vec,
-    check.names = FALSE
-  )
-  
-  names(score_df)[names(score_df) == "score_vec"] <- score_col
-  
-  return(score_df)
-}
-
-# Create 2 complementary plots of signature activity
-# 1. grouped_dot_plot
-#    Shows Parental and MP1 samples separately for each cell line
-# 2. interaction_plot
-#    Connects the group means for each cell line, making it easier
-#    to see whether the Parental-to-MP1 change differs by cell line
-
-plot_signature_activity <- function(
-    score_df,
-    signature_label,
-    x_axis_group = "parental",
-    stratify_group = "cell_line",
-    plot_title = NULL,
-    y_axis_label = NULL,
-    out_file = NULL,
-    save_plot = TRUE
-) {
-  
-  # ---------------------------------------------------------------------------
-  # Validate the signature label
-  # ---------------------------------------------------------------------------
-  
-  if (!is.character(signature_label) ||
-      length(signature_label) != 1 ||
-      is.na(signature_label) ||
-      signature_label == "") {
-    stop("signature_label must be a single non-empty string.")
-  }
-  
-  # Construct the expected score-column name.
-  #
-  # Example:
-  #   signature_label = "PPARG"
-  #   score_col = "PPARG_z_score"
-  score_col <- paste0(signature_label, "_z_score")
-  
-  if (!score_col %in% colnames(score_df)) {
-    stop(
-      paste0(
-        "Column '",
-        score_col,
-        "' not found in score_df."
-      )
-    )
-  }
-  
-  # ---------------------------------------------------------------------------
-  # Validate the grouping variables
-  # ---------------------------------------------------------------------------
-  
-  # These are the only two columns that can control the plot grouping.
-  valid_groups <- c("cell_line", "parental")
-  
-  if (!x_axis_group %in% valid_groups) {
-    stop(
-      paste0(
-        "x_axis_group must be either 'cell_line' or 'parental'. ",
-        "Received: '",
-        x_axis_group,
-        "'."
-      )
-    )
-  }
-  
-  if (!stratify_group %in% valid_groups) {
-    stop(
-      paste0(
-        "stratify_group must be either 'cell_line' or 'parental'. ",
-        "Received: '",
-        stratify_group,
-        "'."
-      )
-    )
-  }
-  
-  # The same column cannot control both plot roles.
-  #
-  # Valid:
-  #   x_axis_group = "parental"
-  #   stratify_group = "cell_line"
-  #
-  # Also valid:
-  #   x_axis_group = "cell_line"
-  #   stratify_group = "parental"
-  #
-  # Invalid:
-  #   x_axis_group = "parental"
-  #   stratify_group = "parental"
-  if (x_axis_group == stratify_group) {
-    stop(
-      paste0(
-        "x_axis_group and stratify_group must be different. ",
-        "Use one of the following combinations:\n",
-        "  x_axis_group = 'parental', stratify_group = 'cell_line'\n",
-        "  x_axis_group = 'cell_line', stratify_group = 'parental'"
-      )
-    )
-  }
-  
-  # Confirm that both selected columns exist in the data frame.
-  if (!x_axis_group %in% colnames(score_df)) {
-    stop(
-      paste0(
-        "Column '",
-        x_axis_group,
-        "' not found in score_df."
-      )
-    )
-  }
-  
-  if (!stratify_group %in% colnames(score_df)) {
-    stop(
-      paste0(
-        "Column '",
-        stratify_group,
-        "' not found in score_df."
-      )
-    )
-  }
-  
-  # ---------------------------------------------------------------------------
-  # Create default labels
-  # ---------------------------------------------------------------------------
-  
-  if (is.null(plot_title)) {
-    plot_title <- paste(signature_label, "Activity")
-  }
-  
-  if (is.null(y_axis_label)) {
-    y_axis_label <- paste(
-      signature_label,
-      "Signature Z-Score"
-    )
-  }
-  
-  # Human-readable labels for plot legends.
-  group_labels <- c(
-    "cell_line" = "Cell line",
-    "parental" = "Condition"
-  )
-  
-  # ---------------------------------------------------------------------------
-  # Define category order
-  # ---------------------------------------------------------------------------
-  
-  # These levels determine the order displayed on the plot.
-  group_levels <- list(
-    parental = c(
-      "Parental",
-      "MP1"
-    ),
-    cell_line = c(
-      "BBN963",
-      "UPPL1541"
-    )
-  )
-  
-  # ---------------------------------------------------------------------------
-  # Define colors
-  # ---------------------------------------------------------------------------
-  
-  # Colors for each possible grouping variable.
-  #
-  # The function automatically selects the correct palette depending
-  # on which column is used for each plot role.
-  group_colors <- list(
-    
-    parental = c(
-      "Parental" = "#18AEB5",
-      "MP1" = "#F05A50"
-    ),
-    
-    cell_line = c(
-      "BBN963" = "#0072B2",
-      "UPPL1541" = "#D55E00"
-    )
-  )
-  
-  # Colors for the variable displayed on the x-axis.
-  x_axis_colors <- group_colors[[x_axis_group]]
-  
-  # Colors for the variable represented by interaction lines.
-  series_colors <- group_colors[[stratify_group]]
-  
-  # ---------------------------------------------------------------------------
-  # Prepare the data
-  # ---------------------------------------------------------------------------
-  
-  score_df <- score_df %>%
-    mutate(
-      
-      # Convert the x-axis column to a factor and set its category order.
-      "{x_axis_group}" := factor(
-        .data[[x_axis_group]],
-        levels = group_levels[[x_axis_group]]
-      ),
-      
-      # Convert the series column to a factor and set its category order.
-      "{stratify_group}" := factor(
-        .data[[stratify_group]],
-        levels = group_levels[[stratify_group]]
-      )
-    ) %>%
-    
-    # Remove rows missing information required for plotting.
-    filter(
-      !is.na(.data[[x_axis_group]]),
-      !is.na(.data[[stratify_group]]),
-      !is.na(.data[[score_col]])
-    )
-  
-  # Stop if filtering removed all rows.
-  if (nrow(score_df) == 0) {
-    stop(
-      "No complete rows remain after filtering the grouping and score columns."
-    )
-  }
-  
-  # ---------------------------------------------------------------------------
-  # Create grouped dot plot
-  # ---------------------------------------------------------------------------
-  
-  # The grouped dot plot:
-  #
-  #   - displays x_axis_group on the x-axis
-  #   - colors points by x_axis_group
-  #   - creates one panel for each stratify_group value
-  #
-  # Default orientation:
-  #   x-axis: Parental and MP1
-  #   panels: BBN963 and UPPL1541
-  #
-  # Swapped orientation:
-  #   x-axis: BBN963 and UPPL1541
-  #   panels: Parental and MP1
-  grouped_dot_plot <- ggplot(
-    score_df,
-    aes(
-      x = .data[[x_axis_group]],
-      y = .data[[score_col]],
-      color = .data[[x_axis_group]]
-    )
-  ) +
-    
-    # Add a reference line at a z-score of zero.
-    geom_hline(
-      yintercept = 0,
-      linetype = "dotted",
-      linewidth = 0.5
-    ) +
-    
-    # Plot individual sample scores.
-    geom_jitter(
-      width = 0.08,
-      height = 0,
-      size = 2.8,
-      alpha = 0.9
-    ) +
-    
-    # Display the group mean as a thick horizontal marker.
-    stat_summary(
-      fun = mean,
-      geom = "point",
-      shape = 95,
-      size = 10,
-      linewidth = 1.2
-    ) +
-    
-    # Create one panel for each series-group value.
-    facet_wrap(
-      vars(.data[[stratify_group]]),
-      nrow = 1
-    ) +
-    
-    # Apply the palette corresponding to the x-axis variable.
-    scale_color_manual(
-      values = x_axis_colors,
-      drop = FALSE
-    ) +
-    
-    labs(
-      title = plot_title,
-      x = NULL,
-      y = y_axis_label,
-      color = group_labels[[x_axis_group]]
-    ) +
-    
-    theme_classic(base_size = 12) +
-    
-    theme(
-      plot.title = element_text(face = "bold"),
-      strip.background = element_blank(),
-      strip.text = element_text(face = "bold"),
-      legend.position = "right"
-    )
-  
-  # ---------------------------------------------------------------------------
-  # Calculate group means
-  # ---------------------------------------------------------------------------
-  
-  # Calculate the mean for every combination of the two variables.
-  #
-  # These combinations are the same regardless of which variable is
-  # displayed on the x-axis.
-  mean_df <- score_df %>%
-    group_by(
-      .data[[stratify_group]],
-      .data[[x_axis_group]]
-    ) %>%
-    summarise(
-      mean_score = mean(
-        .data[[score_col]],
-        na.rm = TRUE
-      ),
-      .groups = "drop"
-    )
-  
-  # ---------------------------------------------------------------------------
-  # Create interaction plot
-  # ---------------------------------------------------------------------------
-  
-  # The interaction plot:
-  #
-  #   - displays x_axis_group on the x-axis
-  #   - creates one line for each stratify_group value
-  #   - colors points and lines by stratify_group
-  #
-  # Default orientation:
-  #   x-axis: Parental and MP1
-  #   lines: BBN963 and UPPL1541
-  #
-  # Swapped orientation:
-  #   x-axis: BBN963 and UPPL1541
-  #   lines: Parental and MP1
-  interaction_plot <- ggplot() +
-    
-    # Add a reference line at a z-score of zero.
-    geom_hline(
-      yintercept = 0,
-      linetype = "dotted",
-      linewidth = 0.5
-    ) +
-    
-    # Display individual observations faintly in the background.
-    geom_jitter(
-      data = score_df,
-      aes(
-        x = .data[[x_axis_group]],
-        y = .data[[score_col]],
-        color = .data[[stratify_group]]
-      ),
-      width = 0.08,
-      height = 0,
-      size = 2.4,
-      alpha = 0.45
-    ) +
-    
-    # Connect the group means.
-    geom_line(
-      data = mean_df,
-      aes(
-        x = .data[[x_axis_group]],
-        y = mean_score,
-        group = .data[[stratify_group]],
-        color = .data[[stratify_group]]
-      ),
-      linewidth = 1.1
-    ) +
-    
-    # Add a point at each group mean.
-    geom_point(
-      data = mean_df,
-      aes(
-        x = .data[[x_axis_group]],
-        y = mean_score,
-        color = .data[[stratify_group]]
-      ),
-      size = 3.5
-    ) +
-    
-    # Apply the palette corresponding to the series variable.
-    scale_color_manual(
-      values = series_colors,
-      drop = FALSE
-    ) +
-    
-    labs(
-      title = paste(
-        plot_title,
-        "\nInteraction View"
-      ),
-      x = NULL,
-      y = y_axis_label,
-      color = group_labels[[stratify_group]]
-    ) +
-    
-    theme_classic(base_size = 12) +
-    
-    theme(
-      plot.title = element_text(face = "bold"),
-      legend.position = "right"
-    )
-  
-  # ---------------------------------------------------------------------------
-  # Save plots
-  # ---------------------------------------------------------------------------
-  
-  if (save_plot) {
-    
-    if (is.null(out_file)) {
-      
-      # Convert the signature name into a filename-safe value.
-      safe_label <- signature_label %>%
-        str_replace_all("[^A-Za-z0-9]+", "_") %>%
-        str_replace_all("^_|_$", "")
-      
-      # Include the orientation in the filename.
-      #
-      # This prevents the swapped version from overwriting plots
-      # created using the default orientation.
-      out_prefix <- paste0(
-        safe_label,
-        "_x_",
-        x_axis_group,
-        "_by_",
-        stratify_group
-      )
-      
-    } else {
-      
-      # Remove an extension supplied by the user.
-      out_prefix <- tools::file_path_sans_ext(out_file)
-    }
-    
-    out_dir <- here::here(
-      "results",
-      "plots"
-    )
-    
-    dir.create(
-      out_dir,
-      recursive = TRUE,
-      showWarnings = FALSE
-    )
-    
-    ggsave(
-      filename = file.path(
-        out_dir,
-        paste0(
-          out_prefix,
-          "_grouped_dot_plot.png"
-        )
-      ),
-      plot = grouped_dot_plot,
-      width = 6,
-      height = 4,
-      dpi = 300
-    )
-    
-    ggsave(
-      filename = file.path(
-        out_dir,
-        paste0(
-          out_prefix,
-          "_interaction_plot.png"
-        )
-      ),
-      plot = interaction_plot,
-      width = 5,
-      height = 4,
-      dpi = 300
-    )
-  }
-  
-  # Return the plots and calculated means.
-  return(
-    list(
-      grouped_dot_plot = grouped_dot_plot,
-      interaction_plot = interaction_plot,
-      means = mean_df
-    )
-  )
-}
-
-# Compare BBN and UPPL models after selecting ONE condition,
-# such as only Parental samples or only MP1 samples
-# Ex. it'll show the signature scores for GATA3 between BBN and UPPL models for ONLY Parental samples
-
-#ANSWERS: Among Parental samples, is signature activity different between the BBN and UPPL model families?
-
-plot_signature_bbn_vs_uppl <- function(
-    score_df, #df that contains signature score
-    signature_label, #PPARG/GATA3
-    parental_filter, #"Parental" or "MP1"
-    plot_title = NULL, # optional custom title for plot
-    out_file = NULL, #optional output file name
-    save_plot = TRUE,
-    model_cols = c( # assign colors for plots
-      "BBN" = "#0072B2",
-      "UPPL" = "#D55E00"
-      ))
-  {
-  
-  # confirm signature label is valid
-  if (!is.character(signature_label) ||
-      length(signature_label) != 1 ||
-      is.na(signature_label) ||
-      signature_label == "") {
-    stop("signature_label must be a single string.")
-  }
-  
-  score_col <- paste0(signature_label, "_z_score")
-  if (!score_col %in% colnames(score_df)) {
-    stop(paste0("Column '", score_col, "' not found in score_df."))
-  }
-  
-  if (!"cell_line" %in% colnames(score_df)) {
-    stop("Column 'cell_line' not found in score_df.")
-  }
-  
-  if (!"parental" %in% colnames(score_df)) {
-    stop("Column 'parental' not found in score_df.")
-  }
-  
-  if (is.null(plot_title)) {
-    plot_title <- paste0(signature_label, " Activity: ", parental_filter, " Only")
-  }
-
-  # prepare data for plotting
-  score_df <- score_df %>%
-    #keep only selected condition
-    filter(parental == parental_filter) %>% #ex. keep only parental samples
-    mutate(
-      # group cell lines into BBN or UPPL
-      cell_model = case_when(
-        grepl("^BBN", cell_line) ~ "BBN",
-        grepl("^UPPL", cell_line) ~ "UPPL",
-        TRUE ~ NA_character_
-      ),
-      cell_model = factor(cell_model, levels = c("BBN", "UPPL"))
-    ) %>%
-    filter(
-      !is.na(cell_model),
-      !is.na(.data[[score_col]])
-    )
-  
-  # create BBN vs UPPL activity plot
-  activity_plot <- ggplot(
-    score_df,
-    aes(
-      x = cell_model,
-      y = .data[[score_col]],
-      color = cell_model
-    )
-  ) +
-    # add horizontal reference line @z-score=0
-    geom_hline(
-      yintercept = 0,
-      linetype = "dotted",
-      linewidth = 0.5
-    ) +
-    #plot individual sample z scores
-    geom_jitter(
-      width = 0.08,
-      height = 0,
-      size = 2.8,
-      alpha = 0.9
-    ) +
-    # add mean score as a thick horizontal marker
-    stat_summary(
-      fun = mean,
-      geom = "point",
-      shape = 95,
-      size = 10,
-      linewidth = 1.2
-    ) +
-    # apply colors for BBN and UPPL
-    scale_color_manual(values = model_cols, drop = FALSE) +
-    labs(
-      title = plot_title,
-      x = NULL,
-      y = paste(signature_label, "Signature Z-Score"),
-      color = NULL
-    ) +
-    # plot title, axis labels, legend title
-    theme_classic(base_size = 12) +
-    theme(
-      plot.title = element_text(face = "bold"),
-      legend.position = "right"
-    )
-  # calculate mean signature score for BBN
-  mean_df <- score_df %>%
-    group_by(cell_model) %>%
-    summarise(
-      mean_score = mean(.data[[score_col]], na.rm = TRUE),
-      .groups = "drop"
-    )
-  # save plot when save_plot=TRUE
-  if (save_plot) {
-    
-    if (is.null(out_file)) {
-      safe_label <- signature_label %>%
-        str_replace_all("[^A-Za-z0-9]+", "_") %>%
-        str_replace_all("^_|_$", "")
-      
-      safe_condition <- parental_filter %>%
-        str_replace_all("[^A-Za-z0-9]+", "_") %>%
-        str_replace_all("^_|_$", "")
-      
-      out_prefix <- paste0(safe_label, "_", safe_condition, "_bbn_vs_uppl")
-    } else {
-      out_prefix <- tools::file_path_sans_ext(out_file)
-    }
-    
-    out_dir <- here::here("results", "plots")
-    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-    
-    ggsave(
-      filename = file.path(out_dir, paste0(out_prefix, ".png")),
-      plot = activity_plot,
-      width = 4.5,
-      height = 4,
-      dpi = 400
-    )
-  }
-  # return both plot and calculated group means
-  return(list(
-    activity_plot = activity_plot,
-    means = mean_df
-  ))
-}
-
-# Compare Parental and MP1 models after selecting ONE condition,
-# such as only BBN samples or only UPPL samples
-# Ex. it'll show the signature scores for GATA3 between Parental and MP1 models for ONLY BBN samples
-
-#ANSWERS: Within BBN subtype, is signature activity different between Parental and MP1 samples?
-
-plot_signature_parental_vs_mp1 <- function(score_df, # input df from z-scores
-                                           signature_label, #gata3/pparg
-                                           cell_model_filter = "BBN", #subtype: BBN/UPPL 
-                                           x_group = "parental",
-                                           color_group = "parental",
-                                           plot_title = NULL, #custom plot title
-                                           out_file = NULL, # saves the plots
-                                           save_plot = TRUE,
-                                           condition_cols = c(
-                                             "Parental" = "#18AEB5", #color for parental
-                                             "MP1" = "#F05A50" #color for MP1
-                                           )) {
-  
-  if (!is.character(signature_label) ||
-      length(signature_label) != 1 ||
-      is.na(signature_label) ||
-      signature_label == "") {
-    stop("signature_label must be a single string.")
-  }
-  
-  score_col <- paste0(signature_label, "_z_score")
-  
-  if (!score_col %in% colnames(score_df)) {
-    stop(paste0("Column '", score_col, "' not found in score_df."))
-  }
-  
-  if (!"cell_line" %in% colnames(score_df)) {
-    stop("Column 'cell_line' not found in score_df.")
-  }
-  
-  if (!"parental" %in% colnames(score_df)) {
-    stop("Column 'parental' not found in score_df.")
-  }
-  
-  if (is.null(plot_title)) {
-    plot_title <- paste0(signature_label, " Activity: ", cell_model_filter, " Only")
-  }
-    y_axis_label <- paste(signature_label, "Signature Z-Score")
-  
-  score_df <- score_df %>%
-    mutate(
-      cell_model = case_when(
-        grepl("^BBN", cell_line) ~ "BBN",
-        grepl("^UPPL", cell_line) ~ "UPPL",
-        TRUE ~ NA_character_
-      ),
-      parental = factor(parental, levels = c("Parental", "MP1"))
-    ) %>%
-    filter(
-      cell_model == cell_model_filter,
-      !is.na(parental),
-      !is.na(.data[[score_col]])
-    )
-  
-  activity_plot <- ggplot(
-    score_df,
-    aes(
-      x = .data[[x_group]],
-      y = .data[[score_col]],
-      color = .data[[color_group]]
-    )
-  ) +
-    geom_hline(
-      yintercept = 0,
-      linetype = "dotted",
-      linewidth = 0.5
-    ) +
-    geom_jitter(
-      width = 0.08,
-      height = 0,
-      size = 2.8,
-      alpha = 0.9
-    ) +
-    stat_summary(
-      fun = mean,
-      geom = "point",
-      shape = 95,
-      size = 10,
-      linewidth = 1.2
-    ) +
-    scale_color_manual(values = condition_cols, drop = FALSE) +
-    labs(
-      title = plot_title,
-      x = NULL,
-      y = y_axis_label,
-      color = NULL
-    ) +
-    theme_classic(base_size = 12) +
-    theme(
-      plot.title = element_text(face = "bold"),
-      legend.position = "right"
-    )
-  
-  mean_df <- score_df %>%
-    group_by(.data[[x_group]]) %>%
-    summarise(
-      mean_score = mean(.data[[score_col]], na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  if (save_plot) {
-    
-    if (is.null(out_file)) {
-      safe_label <- signature_label %>%
-        str_replace_all("[^A-Za-z0-9]+", "_") %>%
-        str_replace_all("^_|_$", "")
-      
-      out_prefix <- paste0(safe_label, "_", cell_model_filter, "_parental_vs_mp1")
-    } else {
-      out_prefix <- tools::file_path_sans_ext(out_file)
-    }
-    
-    out_dir <- here::here("results", "plots")
-    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-    
-    ggsave(
-      filename = file.path(out_dir, paste0(out_prefix, ".png")),
-      plot = activity_plot,
-      width = 4.5,
-      height = 4,
-      dpi = 300
-    )
-  }
-  
-  return(list(
-    activity_plot = activity_plot,
-    means = mean_df
-  ))
-}
-
-plot_signature_parental_vs_mp1_combined <- function(
-    score_df,                          # Data frame containing metadata and z-scores
-    signature_label,                   # Signature name, such as "GATA3" or "PPARG"
-    cell_models = c("BBN", "UPPL"),     # Models shown as separate subplots
-    plot_title = NULL,                 # Optional custom plot title
-    out_file = NULL,                   # Optional output filename
-    save_plot = TRUE,                  # Whether to save the plot
-    condition_cols = c(
-      "Parental" = "#18AEB5",          # Color for Parental samples
-      "MP1" = "#F05A50"                # Color for MP1 samples
-    )
-) {
-  
-  # Check that signature_label is one non-empty string.
-  if (!is.character(signature_label) ||
-      length(signature_label) != 1 ||
-      is.na(signature_label) ||
-      signature_label == "") {
-    stop("signature_label must be a single non-empty string.")
-  }
-  
-  # Construct the expected score-column name.
-  #
-  # Example:
-  #   signature_label = "PPARG"
-  #   score_col = "PPARG_z_score"
-  score_col <- paste0(signature_label, "_z_score")
-  
-  # Check that all required columns are present.
-  required_cols <- c(
-    "cell_line",
-    "parental",
-    score_col
-  )
-  
-  missing_cols <- setdiff(
-    required_cols,
-    colnames(score_df)
-  )
-  
-  if (length(missing_cols) > 0) {
-    stop(
-      paste0(
-        "The following required columns are missing: ",
-        paste(missing_cols, collapse = ", ")
-      )
-    )
-  }
-  
-  # Check that cell_models contains only supported model names.
-  valid_models <- c("BBN", "UPPL")
-  
-  if (!all(cell_models %in% valid_models)) {
-    stop(
-      paste0(
-        "cell_models can only contain: ",
-        paste(valid_models, collapse = ", ")
-      )
-    )
-  }
-  
-  # Remove duplicated model names while preserving their order.
-  cell_models <- unique(cell_models)
-  
-  # Create a default plot title.
-  if (is.null(plot_title)) {
-    plot_title <- paste(
-      signature_label,
-      "Activity: Parental vs MP1"
-    )
-  }
-  
-  # Create the y-axis label.
-  y_axis_label <- paste(
-    signature_label,
-    "Signature Z-Score"
-  )
-  
-  # Prepare the data for plotting.
-  plot_df <- score_df %>%
-    dplyr::mutate(
-      
-      # Assign each cell line to the BBN or UPPL model family.
-      cell_model = dplyr::case_when(
-        grepl("^BBN", cell_line) ~ "BBN",
-        grepl("^UPPL", cell_line) ~ "UPPL",
-        TRUE ~ NA_character_
-      ),
-      
-      # Display Parental before MP1.
-      parental = factor(
-        parental,
-        levels = c("Parental", "MP1")
-      ),
-      
-      # Control the order of the subplot panels.
-      cell_model = factor(
-        cell_model,
-        levels = cell_models
-      )
-    ) %>%
-    
-    # Keep only the requested models and complete observations.
-    dplyr::filter(
-      cell_model %in% cell_models,
-      !is.na(cell_model),
-      !is.na(parental),
-      !is.na(.data[[score_col]])
-    )
-  
-  # Stop if no valid observations remain.
-  if (nrow(plot_df) == 0) {
-    stop("No valid observations remain after filtering.")
-  }
-  
-  # Create one subplot for each cell model.
-  activity_plot <- ggplot2::ggplot(
-    plot_df,
-    ggplot2::aes(
-      x = parental,
-      y = .data[[score_col]],
-      color = parental
-    )
-  ) +
-    
-    # Add a reference line at a z-score of zero.
-    ggplot2::geom_hline(
-      yintercept = 0,
-      linetype = "dotted",
-      linewidth = 0.5
-    ) +
-    
-    # Plot individual sample scores.
-    ggplot2::geom_jitter(
-      width = 0.08,
-      height = 0,
-      size = 2.8,
-      alpha = 0.9
-    ) +
-    
-    # Add the mean as a thick horizontal marker.
-    ggplot2::stat_summary(
-      fun = mean,
-      geom = "point",
-      shape = 95,
-      size = 10,
-      linewidth = 1.2
-    ) +
-    
-    # Create separate BBN and UPPL subplots.
-    ggplot2::facet_wrap(
-      ggplot2::vars(cell_model),
-      nrow = 1
-    ) +
-    
-    # Apply the Parental and MP1 colors.
-    ggplot2::scale_color_manual(
-      values = condition_cols,
-      drop = FALSE
-    ) +
-    
-    # Add plot labels.
-    ggplot2::labs(
-      title = plot_title,
-      x = NULL,
-      y = y_axis_label,
-      color = NULL
-    ) +
-    
-    ggplot2::theme_classic(base_size = 12) +
-    
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(
-        face = "bold"
-      ),
-      
-      # Add more horizontal space between subplots.
-      panel.spacing.x = grid::unit(
-        1.5,
-        "lines"
-      ),
-      
-      # Draw a border around each subplot.
-      panel.border = ggplot2::element_rect(
-        color = "grey60",
-        fill = NA,
-        linewidth = 0.7
-      ),
-      
-      # Add a visible background and border to each subplot title.
-      strip.background = ggplot2::element_rect(
-        fill = "grey95",
-        color = "grey60",
-        linewidth = 0.7
-      ),
-      
-      # Format the BBN and UPPL subplot labels.
-      strip.text = ggplot2::element_text(
-        face = "bold",
-        size = 12,
-        margin = ggplot2::margin(
-          t = 5,
-          r = 5,
-          b = 5,
-          l = 5
-        )
-      ),
-      
-      legend.position = "right"
-    )
-  
-  # Calculate the mean score for each model and condition.
-  mean_df <- plot_df %>%
-    dplyr::group_by(
-      cell_model,
-      parental
-    ) %>%
-    dplyr::summarise(
-      mean_score = mean(
-        .data[[score_col]],
-        na.rm = TRUE
-      ),
-      .groups = "drop"
-    )
-  
-  # Save the combined faceted plot.
-  if (save_plot) {
-    
-    if (is.null(out_file)) {
-      
-      # Make the signature label safe for use in a filename.
-      safe_label <- signature_label %>%
-        stringr::str_replace_all(
-          "[^A-Za-z0-9]+",
-          "_"
-        ) %>%
-        stringr::str_replace_all(
-          "^_|_$",
-          ""
-        )
-      
-      out_prefix <- paste0(
-        safe_label,
-        "_BBN_UPPL_parental_vs_mp1"
-      )
-      
-    } else {
-      
-      # Remove any supplied file extension.
-      out_prefix <- tools::file_path_sans_ext(
-        out_file
-      )
-    }
-    
-    # Define and create the output directory.
-    out_dir <- here::here(
-      "results",
-      "plots"
-    )
-    
-    dir.create(
-      out_dir,
-      recursive = TRUE,
-      showWarnings = FALSE
-    )
-    
-    # Save the plot as a high-resolution PNG.
-    ggplot2::ggsave(
-      filename = file.path(
-        out_dir,
-        paste0(out_prefix, ".png")
-      ),
-      plot = activity_plot,
-      width = 7,
-      height = 4,
-      dpi = 300
-    )
-  }
-  
-  # Return the plot and calculated means.
-  return(
-    list(
-      activity_plot = activity_plot,
-      means = mean_df
-    )
-  )
-}
-```
-
 # **Score PPARG Activity in Mouse Samples Using the Public Rosi Signature**
 
 ```{r}
@@ -1296,54 +212,32 @@ plot_signature_activity(
   signature_label = "PPARG",
   x_axis_group = "parental",
   stratify_group = "cell_line",
-  plot_title="PPARG Activity from UMUC9 Significant Genes",
-  out_file="umuc9_public_pparg_activity.png"
+  plot_title="PPARG Activity from UMUC9",
+  out_file="pparg_umuc9_activity.png"
 )
 
-plot_signature_bbn_vs_uppl(umuc9_pparg_score_df,
-                           signature_label = "PPARG",
-                           parental_filter = "Parental",
-                           # color_group = "cell_model",
-                           plot_title = "PPARG (UMUC9) Activity of Parentals",
-                           out_file = NULL,
-                           save_plot = TRUE,
-                           model_cols = c(
-                             "BBN" = "#0072B2",
-                             "UPPL" = "#D55E00"
-                           ))
-
-plot_signature_bbn_vs_uppl(umuc9_pparg_score_df,
-                           signature_label = "PPARG",
-                           parental_filter = "MP1",
-                           # color_group = "cell_model",
-                           plot_title = "PPARG (UMUC9) Activity of MP1",
-                           out_file = NULL,
-                           save_plot = TRUE,
-                           model_cols = c(
-                             "BBN" = "#1E3A8A",
-                             "UPPL" = "#F5A623"
-                           ))
-
-plot_signature_parental_vs_mp1(
-  score_df = umuc9_pparg_score_df,
+plot_signature_bbn_vs_uppl_combined(
+  umuc9_pparg_score_df,
   signature_label = "PPARG",
-  cell_model_filter = "BBN",
-  condition_cols = c(
-    "Parental" = "#2F855A",
-    "MP1" = "#F6ADCD"
-  ),
-  plot_title = "PPARG (UMUC9) Activity of BBNs"
-)
+  plot_title = "PPARG Activity from UMUC9",
+  out_file = "PPARG_UMUC9_BBN_UPPL_comp",
+  save_plot = TRUE,
+  model_cols = c(
+    "BBN" = "#1E3A8A",
+    "UPPL" = "#F5A623"
+    )
+  )
 
-plot_signature_parental_vs_mp1(
-  score_df = umuc9_pparg_score_df,
-  signature_label = "PPARG",
-  cell_model_filter = "UPPL",
-  condition_cols = c(
-    "Parental" = "#556B2F",
-    "MP1" = "#D8A3B0"
-  ),
-  plot_title = "PPARG (UMUC9) Activity of UPPLs"
+plot_signature_bbn_vs_uppl_pooled(
+  score_df=umuc9_pparg_score_df,
+  signature_label="PPARG",
+  plot_title = "PPARG Signature Activity from UMUC9 in BBN and UPPL Models",
+  out_file = "PPARG_UMUC9_signature_activity_BBN_UPPL.png",
+  save_plot = TRUE,
+  model_cols = c(
+    "BBN" = "#1E3A8A",
+    "UPPL" = "#F5A623"
+  )
 )
 
 plot_signature_parental_vs_mp1_combined(
@@ -1352,7 +246,21 @@ plot_signature_parental_vs_mp1_combined(
   condition_cols = c(
     "Parental" = "#556B2F",
     "MP1" = "#D8A3B0"
-  ))
+  ),
+  plot_title = "PPARG Activity from UMUC9",
+  out_file = "PPARG_UMUC9_P_MP1_comp"
+)
+
+plot_signature_parental_vs_mp1_pooled(
+  umuc9_pparg_score_df,
+  signature_label = "PPARG",
+  condition_cols = c(
+    "Parental" = "#556B2F",
+    "MP1" = "#D8A3B0"
+  ),
+  plot_title = "PPARG Signature Activity in UMUC9 Models: Parental vs MP1",
+  out_file = "PPARG_signature_activity_UMUC9_parental_vs_MP1"
+)
 ```
 
 **Score GATA3 Pathway Activity in Mouse Samples**
@@ -1369,8 +277,10 @@ gata3_scores_df <- format_score(gata3_score, signature_label = "GATA3")
 plot_signature_activity(
   score_df = gata3_scores_df,
   signature_label = "GATA3",
+  x_axis_group = "parental",
+  stratify_group = "cell_line",
   plot_title="GATA3 Activity",
-  out_file="GATA3_activity.png"
+  out_file="gata3_activity.png"
 )
 
 plot_signature_bbn_vs_uppl(gata3_scores_df,
@@ -1384,16 +294,27 @@ plot_signature_bbn_vs_uppl(gata3_scores_df,
                              "UPPL" = "#D55E00"
                            ))
 
-plot_signature_bbn_vs_uppl(gata3_scores_df,
-                           signature_label = "GATA3",
-                           parental_filter = "MP1",
-                           plot_title = "GATA3 Activity of MP1",
-                           out_file = NULL,
-                           save_plot = TRUE,
-                           model_cols = c(
-                             "BBN" = "#1E3A8A",
-                             "UPPL" = "#F5A623"
-                           ))
+plot_signature_bbn_vs_uppl_combined(gata3_scores_df,
+                                    signature_label = "GATA3",
+                                    plot_title = "GATA3 Activity by Parental/MP1",
+                                    out_file = NULL,
+                                    save_plot = TRUE,
+                                    model_cols = c(
+                                      "BBN" = "#1E3A8A",
+                                      "UPPL" = "#F5A623"
+                                    ))
+
+plot_signature_bbn_vs_uppl_pooled(
+  score_df=gata3_scores_df,
+  signature_label="GATA3",
+  plot_title = "GATA3 Signature Activity in BBN and UPPL Models",
+  out_file = "GATA3_signature_activity_BBN_UPPL.png",
+  save_plot = TRUE,
+  model_cols = c(
+    "BBN" = "#1E3A8A",
+    "UPPL" = "#F5A623"
+  )
+)
 
 plot_signature_parental_vs_mp1_combined(
   gata3_scores_df, 
@@ -1401,7 +322,21 @@ plot_signature_parental_vs_mp1_combined(
   condition_cols = c(
     "Parental" = "#556B2F",
     "MP1" = "#D8A3B0"
-  ))
+  ),
+  plot_title = "GATA3 Signature Activity by Subtype",
+  out_file=NULL
+)
+
+plot_signature_parental_vs_mp1_pooled(
+  gata3_scores_df,
+  signature_label = "GATA3",
+  condition_cols = c(
+    "Parental" = "#556B2F",
+    "MP1" = "#D8A3B0"
+  ),
+  plot_title = "GATA3 Signature Activity: Parental vs MP1",
+  out_file = "GATA3_signature_activity_parental_vs_MP1"
+)
 ```
 
 # **Identify In-House Rosiglitazone-Responsive Genes**
@@ -1489,54 +424,54 @@ umuc_rt112_pparg_scores_df <- format_score(umuc_rt112_pparg_scores, signature_la
 plot_signature_activity(
   score_df = umuc_rt112_pparg_scores_df,
   signature_label = "PPARG",
-  plot_title="PPARG Activity from UMUCs+RT112 Significant Genes",
-  out_file="umuc_rt112_pparg_activity.png"
+  x_axis_group = "parental",
+  stratify_group = "cell_line",
+  plot_title="PPARG Activity",
+  out_file="pparg_umuc_rt112_activity.png"
 )
 
-plot_signature_bbn_vs_uppl(umuc_rt112_pparg_scores_df,
-                           signature_label = "PPARG",
-                           parental_filter = "Parental",
-                           color_group = "cell_model",
-                           plot_title = "PPARG (UMUCs+RT112) Activity of Parentals",
-                           out_file = NULL,
-                           save_plot = TRUE,
-                           model_cols = c(
-                             "BBN" = "#0072B2",
-                             "UPPL" = "#D55E00"
-                           ))
+plot_signature_bbn_vs_uppl_combined(umuc_rt112_pparg_scores_df,
+                                    signature_label = "PPARG",
+                                    plot_title = "PPARG Activity from UMUC/RT112",
+                                    out_file = "PPARG_UMUC_RT112_BBN_UPPL_comp",
+                                    save_plot = TRUE,
+                                    model_cols = c(
+                                      "BBN" = "#1E3A8A",
+                                      "UPPL" = "#F5A623"
+                                    ))
 
-plot_signature_bbn_vs_uppl(umuc_rt112_pparg_scores_df,
-                           signature_label = "PPARG",
-                           parental_filter = "MP1",
-                           color_group = "cell_model",
-                           plot_title = "PPARG (UMUCs+RT112) Activity of MP1",
-                           out_file = NULL,
-                           save_plot = TRUE,
-                           model_cols = c(
-                             "BBN" = "#1E3A8A",
-                             "UPPL" = "#F5A623"
-                           ))
-
-plot_signature_parental_vs_mp1(
-  score_df = umuc_rt112_pparg_scores_df,
-  signature_label = "PPARG",
-  cell_model_filter = "BBN",
-  condition_cols = c(
-    "Parental" = "#2F855A",
-    "MP1" = "#F6ADCD"
-  ),
-  plot_title = "PPARG (UMUCs+RT112) Activity of BBNs"
+plot_signature_bbn_vs_uppl_pooled(
+  score_df=umuc_rt112_pparg_scores_df,
+  signature_label="PPARG",
+  plot_title = "PPARG Signature Activity from UMUC+RT112 in BBN and UPPL Models",
+  out_file = "PPARG_UMUC_RT112_signature_activity_BBN_UPPL.png",
+  save_plot = TRUE,
+  model_cols = c(
+    "BBN" = "#1E3A8A",
+    "UPPL" = "#F5A623"
+  )
 )
 
-plot_signature_parental_vs_mp1(
-  score_df = umuc_rt112_pparg_scores_df,
-  signature_label = "PPARG",
-  cell_model_filter = "UPPL",
+plot_signature_parental_vs_mp1_combined(
+  umuc_rt112_pparg_scores_df, 
+  signature_label="PPARG",
   condition_cols = c(
     "Parental" = "#556B2F",
     "MP1" = "#D8A3B0"
   ),
-  plot_title = "PPARG (UMUCs+RT112) Activity of UPPLs"
+  plot_title = "PPARG Activity from UMUC/RT112",
+  out_file = "PPARG_UMUC_RT112_P_MP1_comp"
+)
+
+plot_signature_parental_vs_mp1_pooled(
+  umuc_rt112_pparg_scores_df,
+  signature_label = "PPARG",
+  condition_cols = c(
+    "Parental" = "#556B2F",
+    "MP1" = "#D8A3B0"
+  ),
+  plot_title = "PPARG Signature Activity in UMUC and RT112 Models: Parental vs MP1",
+  out_file = "PPARG_signature_activity_UMUC_RT112_parental_vs_MP1"
 )
 ```
 
@@ -1801,4 +736,54 @@ ggplot() +
   annotate("text", x = 0.9, y = 1.15, label = "UMUC+RT112", size = 5) +
   coord_fixed() +
   theme_void()
+```
+
+Check if genes upregulated in OUR rosi data (quickly)
+
+```{r}
+library(readr)
+library(dplyr)
+library(purrr)
+
+check_upregulation <- function(row, pseudocount = 0) {
+  cell_lines <- c("R1", "U1", "U4", "U6")
+  
+  map_dfr(cell_lines, function(cell) {
+    rosi_cols <- grep(paste0("^", cell, "_R_"), names(row), value = TRUE)
+    ctrl_cols <- grep(paste0("^", cell, "_U_"), names(row), value = TRUE)
+    
+    rosi_mean <- mean(as.numeric(unlist(row[rosi_cols])), na.rm = TRUE)
+    ctrl_mean <- mean(as.numeric(unlist(row[ctrl_cols])), na.rm = TRUE)
+    
+    fold_change <- (rosi_mean + pseudocount) /
+      (ctrl_mean + pseudocount)
+    
+    tibble(
+      feature_id  = as.character(row[["feature_id"]][1]),
+      cell_line   = cell,
+      rosi_mean   = rosi_mean,
+      control_mean = ctrl_mean,
+      fold_change = fold_change,
+      log2FC      = log2(fold_change),
+      upregulated = rosi_mean > ctrl_mean
+    )
+  })
+}
+
+counts <- read_tsv(
+  "/Users/timothy/Documents/GitHub/mouse-models/data/ROSI_UMUC9_UMUC14_counts_tpm_gene_id.tsv"
+)
+
+
+N4 <- counts %>%
+  filter(feature_id == "ENSG00000170323.8") %>% #NECTIN4
+  check_upregulation(pseudocount = 1)
+
+PPARG <- counts %>%
+  filter(feature_id == "ENSG00000132170.20") %>% #NECTIN4
+  check_upregulation(pseudocount = 1)
+
+FABP4 <- counts %>%
+  filter(feature_id == "ENSG00000170323.8") %>% #NECTIN4
+  check_upregulation(pseudocount = 1)
 ```
