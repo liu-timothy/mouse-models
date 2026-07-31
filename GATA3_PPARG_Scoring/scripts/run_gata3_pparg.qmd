@@ -787,3 +787,78 @@ FABP4 <- counts %>%
   filter(feature_id == "ENSG00000170323.8") %>% #NECTIN4
   check_upregulation(pseudocount = 1)
 ```
+
+```{r}
+genes_use_luminal <- intersect(c("GATA3", "UPK1A", "UPK2", "PPARG"), rownames(humanized_mouse_expr))
+
+luminal_gene_z <- t(scale(t(humanized_mouse_expr[genes_use_luminal, , drop = FALSE])))
+luminal_score <- colMeans(luminal_gene_z, na.rm = TRUE)
+
+
+luminal_scores_df <- format_score(luminal_score, signature_label = "luminal")
+
+plot_signature_activity(
+  score_df = luminal_scores_df,
+  signature_label = "luminal",
+  x_axis_group = "parental",
+  stratify_group = "cell_line",
+  plot_title="luminal Activity",
+  out_file="luminal_activity.png",
+  save_plot = FALSE
+)
+
+plot_signature_bbn_vs_uppl(gata3_scores_df,
+                           signature_label = "GATA3",
+                           parental_filter = "Parental",
+                           plot_title = "GATA3 Activity of Parentals",
+                           out_file = NULL,
+                           save_plot = TRUE,
+                           model_cols = c(
+                             "BBN" = "#0072B2",
+                             "UPPL" = "#D55E00"
+                           ))
+
+plot_signature_bbn_vs_uppl_combined(gata3_scores_df,
+                                    signature_label = "GATA3",
+                                    plot_title = "GATA3 Activity by Parental/MP1",
+                                    out_file = NULL,
+                                    save_plot = TRUE,
+                                    model_cols = c(
+                                      "BBN" = "#1E3A8A",
+                                      "UPPL" = "#F5A623"
+                                    ))
+
+plot_signature_bbn_vs_uppl_pooled(
+  score_df=luminal_scores_df,
+  signature_label="luminal",
+  plot_title = "luminal Signature Activity in BBN and UPPL Models",
+  out_file = "luminal_signature_activity_BBN_UPPL.png",
+  save_plot = FALSE,
+  model_cols = c(
+    "BBN" = "#1E3A8A",
+    "UPPL" = "#F5A623"
+  )
+)
+
+plot_signature_parental_vs_mp1_combined(
+  gata3_scores_df, 
+  signature_label="GATA3",
+  condition_cols = c(
+    "Parental" = "#556B2F",
+    "MP1" = "#D8A3B0"
+  ),
+  plot_title = "GATA3 Signature Activity by Subtype",
+  out_file=NULL
+)
+
+plot_signature_parental_vs_mp1_pooled(
+  gata3_scores_df,
+  signature_label = "GATA3",
+  condition_cols = c(
+    "Parental" = "#556B2F",
+    "MP1" = "#D8A3B0"
+  ),
+  plot_title = "GATA3 Signature Activity: Parental vs MP1",
+  out_file = "GATA3_signature_activity_parental_vs_MP1"
+)
+```
