@@ -4,7 +4,11 @@ format: html
 editor: visual
 ---
 
-## Setup
+This is reproducing the PPARG and GATA3 scoring using their data. I was trying to recreate their figure.
+
+Their data was obtained from [GSE112973](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE112973)
+
+# Setup
 
 ```{r}
 #| echo: false
@@ -35,7 +39,7 @@ cpm_to_uq_log2 <- function(cpm_matrix) {
 }
 ```
 
-## Get PPARG Signatures (their data)
+# Get PPARG Signatures (their data)
 
 ```{r}
 #| echo: false
@@ -85,7 +89,7 @@ sig <- samr.compute.siggenes.table(
 )
 ```
 
-**PPARG Signatures**
+# **PPARG Signatures**
 
 ```{r}
 # Significant upregulated genes AKA genes induced by rosi (downstream most likely)
@@ -96,7 +100,7 @@ head(pparg_sig)
 sig$ngenes.up
 ```
 
-**GATA3 Signatures**
+# **GATA3 Signatures**
 
 ```{r}
 gata3_sig <- c(
@@ -106,7 +110,9 @@ gata3_sig <- c(
 )
 ```
 
-**Load + Format Data**
+# **Load + Format Data**
+
+- Their data comes from: [GSE112973](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE112973)
 
 ```{r}
 library(dplyr)
@@ -158,6 +164,8 @@ expr_input <- kim_df %>%
   summarise(across(all_of(colnames(kim_data_uqlog2)), mean), .groups = "drop") %>% #avg expression within each human symbol
   column_to_rownames("human_symbol")
 ```
+
+# Plotting Function
 
 ```{r}
 plot_signature_activity <- function(score_vec,
@@ -238,7 +246,7 @@ plot_signature_activity <- function(score_vec,
 }
 ```
 
-**Calculate PPARG Signature Score**
+# **Calculate PPARG Signature Score**
 
 ```{r}
 library(ggplot2)
@@ -259,7 +267,7 @@ plot_signature_activity(
 
 ```
 
-**Calculate GATA3**
+# **Calculate and Plot GATA3**
 
 ```{r}
 genes_use_gata3 <- intersect(gata3_sig, rownames(expr_input))
@@ -274,8 +282,9 @@ plot_signature_activity(
 )
 ```
 
-**Get significantly upregulated genes from our Rosi-treated Datasets**
+# **Get significantly upregulated genes from our Rosi-treated Datasets**
 
+- Using significant genes found from our own Rosi dataset and applying it to calculate PPARG activity on their data
 - u1 = umuc1
 - u6 = umuc6
 - u14 = umuc14
@@ -290,7 +299,7 @@ library(org.Hs.eg.db)
 library(AnnotationDbi)
 
 #load in tpm data and convert to log2(tpm+1)
-tpm_umuc_rt_rosi_tpm <- read.delim("~/Documents/GitHub/mouse-models/BASE47/data/rosi_counts_tpm_gene_id.tsv", row.names=1)
+tpm_umuc_rt_rosi_tpm <- read.delim(here("data","rosi_counts_tpm_gene_id.tsv"), row.names=1)
 tpm_umuc_rt_rosi_tpm <- tpm_umuc_rt_rosi_tpm[, !grepl("_N_", names(tpm_umuc_rt_rosi_tpm))]
 tpm_umuc_rt_rosi_log2 <- log2(tpm_umuc_rt_rosi_tpm + 1)
 
@@ -340,7 +349,9 @@ sig <- samr.compute.siggenes.table(
 
 ```
 
-s
+# **Calculate and Plot PPARG** Activity
+
+- Plotting from our UMUC6-identified significantly upregulated genes
 
 ```{r}
 test_sig <- sig$genes.up

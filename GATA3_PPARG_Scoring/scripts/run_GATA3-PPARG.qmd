@@ -4,7 +4,37 @@ format: html
 editor: visual
 ---
 
-Folder structure: GATA3_PPARG_Scoring/ \|-- data/ \|-- results/ \| `-- plots/`-- scripts/ \`-- run_gata3_pparg_files/ ---
+# Workflow
+
+bulk mouse RNA-seq expression matrix
+
+↓
+
+normalize/log-transform expression
+
+↓
+
+map mouse genes to human orthologs
+
+↓
+
+apply PPARG and GATA3 gene signatures
+
+↓
+
+gene-wise Z-score across samples
+
+↓
+
+average signature genes per sample
+
+↓
+
+PPARG and GATA3 activity scores
+
+↓
+
+compare activity across BBN vs UPPL and Parental vs MP1
 
 # Setup
 
@@ -35,7 +65,7 @@ library(tidyverse)
 # =========
 
 # plotting functions stored separately
-source(here::here("scripts", "gata3_pparg_plot_functions.R"))
+source(here::here("scripts", "plot-functions_GATA3-PPARG.R"))
 
 #Convert to 90th percentile of log(tpm+1)
 cpm_to_uq_log2 <- function(cpm_matrix) {
@@ -127,6 +157,8 @@ umuc9_rosi_siggenes$ngenes.up
 
 **Define Curated GATA3 Pathway Signature**
 
+- These genes were already [predefined](https://maayanlab.cloud/Harmonizome/gene_set/gata3+participate+in+activating+the+th2+cytokine+genes+expression/Biocarta+Pathways)
+
 ```{r}
 gata3_sig <- c(
   "ADCY1", "GATA3", "GNAS", "IL13", "IL1A", "IL4", "IL5",
@@ -143,6 +175,22 @@ gata3_sig <- c(
 - Applies upper-quartile log2 normalization (USES CPM, NOT TPM)
 - Converts mouse gene symbols to human orthologs so they can be compared with human PPARG and GATA3 signatures
 - Collapses duplicate human ortholog mappings by averaging expression values
+
+<!-- -->
+
+- **Dataset**
+
+  - **Comparison:** Parental vs. MP1
+
+  - **Plasmidsaurus ID:** K8HVZP
+
+  - **Sequencing date:** May 18, 2026
+
+  - **Original data format:** Expression matrix (`.csv`)
+
+  - **File used for analysis:** `parental_mp1_K8HVZP-expression-matrix.csv`
+
+  - **Data type:** CPM-normalized expression counts
 
 ```{r}
 mouse_cpm_expr <- read.csv(here("data", "parental_mp1_K8HVZP-expression-matrix.csv"), sep=",", header=T)
@@ -263,7 +311,7 @@ plot_signature_parental_vs_mp1_pooled(
 )
 ```
 
-**Score GATA3 Pathway Activity in Mouse Samples**
+# **Score GATA3 Pathway Activity in Mouse Samples**
 
 ```{r}
 genes_use_gata3 <- intersect(gata3_sig, rownames(humanized_mouse_expr))
@@ -341,6 +389,26 @@ plot_signature_parental_vs_mp1_pooled(
 
 # **Identify In-House Rosiglitazone-Responsive Genes**
 
+- Mainly **identifying** genes that are significant when induced by Rosi vs non-Rosi samples (from our own data)
+
+- **Dataset**
+
+  - **Comparison:** Rosiglitazone-treated vs. untreated/control
+
+  - **Cell lines:** RT112, UMUC1, UMUC14, and UMUC6
+
+  - **Original data format:** Expression matrix (`.tsv`)
+
+  - **File used for analysis:** `rosi_counts_tpm_gene_id.tsv`
+
+  - **Data type:** TPM-normalized gene expression
+
+  - **Gene identifiers:** Ensembl gene IDs
+
+  - **Replicates:** 3 samples per treatment condition for each cell line
+
+<!-- -->
+
 - u1 = umuc1
 - u6 = umuc6
 - u14 = umuc14
@@ -351,7 +419,7 @@ library(org.Hs.eg.db)
 library(AnnotationDbi)
 
 #load in tpm data and convert to log2(tpm+1)
-tpm_umuc_rt_rosi_tpm <- read.delim("~/Documents/GitHub/mouse-models/BASE47/data/rosi_counts_tpm_gene_id.tsv", row.names=1)
+tpm_umuc_rt_rosi_tpm <- read.delim(here("data","rosi_counts_tpm_gene_id.tsv"), row.names=1)
 tpm_umuc_rt_rosi_tpm <- tpm_umuc_rt_rosi_tpm[, !grepl("_N_", names(tpm_umuc_rt_rosi_tpm))]
 tpm_umuc_rt_rosi_log2 <- log2(tpm_umuc_rt_rosi_tpm + 1)
 
@@ -409,6 +477,9 @@ umuc_rt112_siggenes <- samr.compute.siggenes.table(
 ```
 
 # **Score Samples Using In-House Rosi-Responsive Signature**
+
+- From the chunk above, you obtained the significant genes in Rosi vs control and now you're scoring the samples using only the significant genes you identified
+- So we're scoring the samples based on the identified significantly upregulated genes
 
 ```{r}
 umuc_rt112_pparg_signature <- umuc_rt112_siggenes$genes.up[, "Gene ID"]
@@ -475,7 +546,9 @@ plot_signature_parental_vs_mp1_pooled(
 )
 ```
 
-Run SAM on 4 lines separately:
+# Run SAM on 4 lines separately:
+
+- Here instead of identifying significant genes in Rosi across ALL 4 cell lines, you're only finding significant genes in one cell line at a time.
 
 ```{r}
 # Cell-line identifiers in the sample names
@@ -614,12 +687,21 @@ umuc14_siggenes <- rosi_sam_results$umuc14$siggenes$genes.up[, "Gene Name"]
 rt112_siggenes  <- rosi_sam_results$rt112$siggenes$genes.up[, "Gene Name"]
 ```
 
+# Overlapping Significant Genes across Cell Lines
+
+- Recalculating significant upregulated genes in each cell line, then finding the overlap as opposed to finding the significant genes in the pooled dataset
+
+- Generates an upset plot of all the cell lines and \# significant UPREGULATED genes
+
 ```{r}
 # install.packages("ComplexUpset")
 
 library(ComplexUpset)
 library(ggplot2)
 
+# Create a list of significantly upregulated genes for each cell line
+# unique() removes duplicate genes
+# na.omit() removes missing gene names
 upregulated_gene_sets <- list(
   UMUC1  = unique(na.omit(umuc1_siggenes)),
   UMUC6  = unique(na.omit(umuc6_siggenes)),
@@ -628,8 +710,14 @@ upregulated_gene_sets <- list(
   UMUC9 = unique(na.omit(umuc9_rosi_upregulated_genes))
 )
 
+# Combine all gene sets into one master list of unique genes
+# observed as significantly upregulated in at least one cell line
 all_genes <- sort(unique(unlist(upregulated_gene_sets)))
 
+# Build a presence/absence table for the UpSet plot
+# Each row is a gene
+# Each cell-line column is TRUE if that gene is upregulated
+# in that cell line and FALSE otherwise
 upset_data <- data.frame(
   gene = all_genes,
   UMUC1 = all_genes %in% upregulated_gene_sets$UMUC1,
@@ -639,11 +727,13 @@ upset_data <- data.frame(
   UMUC9 = all_genes %in% upregulated_gene_sets$UMUC9
 )
 
+# Generate an UpSet plot showing overlap among the significantly upregulated gene sets from the five cell lines
 upset_plot <- ComplexUpset::upset(
   upset_data,
+  # Define which gene sets should be compared
   intersect = c("UMUC1", "UMUC6", "UMUC14", "RT112", "UMUC9"),
   name = "Cell line",
-  min_size = 0,
+  min_size = 0, # Show intersections even if their size is zero
   sort_intersections_by = c("degree", "cardinality"),
   base_annotations = list(
     "Intersection size" =
@@ -667,22 +757,25 @@ ggsave(
 )
 ```
 
-Overlapping Significantly Upregulated Genes between UMUC9 and UMUCs+RT112
+# Overlapping Significantly Upregulated Genes between UMUC9 and UMUCs+RT112
+
+- Finding overlapping significant Rosi-induced genes between their dataset and our dataset
 
 ```{r}
 library(ggforce)
 library(ggrepel)
 
-
-umuc_rt112_pparg_signature
-
-genes_use_pparg
+# genes to highlight on venn diagram
 highlight_genes <- c("TP53", "BRCA1", "NECTIN4", "FABP4", "GATA3", "KRT6", "KRT14", "KRT20", "PPARG")
 
+# genes unique to or shared b/w the 2 PPARG signatures
 umuc9_only <- setdiff(genes_use_pparg, umuc_rt112_pparg_signature)
 umuc_rt112_only <- setdiff(umuc_rt112_pparg_signature, genes_use_pparg)
+
+#shared genes b/w UMUC9 (theirs) and UMUC+RT112 dataset (ours)
 both_umuc9_umuc_rt112   <- intersect(genes_use_pparg, umuc_rt112_only)
 
+# get # genes in each venn diagram
 counts <- data.frame(
   region = c("UMUC9 only", "Both", "UMUC+RT112 only"),
   x = c(-0.8, 0, 0.8),
@@ -690,6 +783,7 @@ counts <- data.frame(
   label = c(length(umuc9_only), length(both_umuc9_umuc_rt112), length(umuc_rt112_only))
 )
 
+# Identify highlighted genes and assign them to Venn regions
 highlight_df <- data.frame(gene = highlight_genes) %>%
   filter(gene %in% union(umuc9_only, umuc_rt112_only)) %>%
   mutate(
@@ -706,8 +800,8 @@ highlight_df <- data.frame(gene = highlight_genes) %>%
     y = row_number() * 0.15
   )
 
-
-ggplot() +
+# Plot overlap between UMUC9 and UMUC+RT112 PPARG signatures
+venn_plot <- ggplot() +
   geom_circle(
     aes(x0 = -0.5, y0 = 0, r = 1),
     fill = "skyblue",
@@ -736,67 +830,27 @@ ggplot() +
   annotate("text", x = 0.9, y = 1.15, label = "UMUC+RT112", size = 5) +
   coord_fixed() +
   theme_void()
+
+venn_plot
 ```
 
-Check if genes upregulated in OUR rosi data (quickly)
+# Score Predefined Luminal and GATA3 Signatures in Mouse Samples
 
-```{r}
-library(readr)
-library(dplyr)
-library(purrr)
+- Uses **predefined luminal and GATA3 gene signatures** to score pathway activity in mouse RNA-seq samples, rather than deriving the signature from rosiglitazone-upregulated genes
 
-check_upregulation <- function(row, pseudocount = 0) {
-  cell_lines <- c("R1", "U1", "U4", "U6")
-  
-  map_dfr(cell_lines, function(cell) {
-    rosi_cols <- grep(paste0("^", cell, "_R_"), names(row), value = TRUE)
-    ctrl_cols <- grep(paste0("^", cell, "_U_"), names(row), value = TRUE)
-    
-    rosi_mean <- mean(as.numeric(unlist(row[rosi_cols])), na.rm = TRUE)
-    ctrl_mean <- mean(as.numeric(unlist(row[ctrl_cols])), na.rm = TRUE)
-    
-    fold_change <- (rosi_mean + pseudocount) /
-      (ctrl_mean + pseudocount)
-    
-    tibble(
-      feature_id  = as.character(row[["feature_id"]][1]),
-      cell_line   = cell,
-      rosi_mean   = rosi_mean,
-      control_mean = ctrl_mean,
-      fold_change = fold_change,
-      log2FC      = log2(fold_change),
-      upregulated = rosi_mean > ctrl_mean
-    )
-  })
-}
-
-counts <- read_tsv(
-  "/Users/timothy/Documents/GitHub/mouse-models/data/ROSI_UMUC9_UMUC14_counts_tpm_gene_id.tsv"
-)
-
-
-N4 <- counts %>%
-  filter(feature_id == "ENSG00000170323.8") %>% #NECTIN4
-  check_upregulation(pseudocount = 1)
-
-PPARG <- counts %>%
-  filter(feature_id == "ENSG00000132170.20") %>% #NECTIN4
-  check_upregulation(pseudocount = 1)
-
-FABP4 <- counts %>%
-  filter(feature_id == "ENSG00000170323.8") %>% #NECTIN4
-  check_upregulation(pseudocount = 1)
-```
+  - Here we're only looking at GATA3, UPK1A, UPK2, PPARG as our signatures
 
 ```{r}
 genes_use_luminal <- intersect(c("GATA3", "UPK1A", "UPK2", "PPARG"), rownames(humanized_mouse_expr))
 
+# Z-score each luminal gene across samples
 luminal_gene_z <- t(scale(t(humanized_mouse_expr[genes_use_luminal, , drop = FALSE])))
 luminal_score <- colMeans(luminal_gene_z, na.rm = TRUE)
 
 
 luminal_scores_df <- format_score(luminal_score, signature_label = "luminal")
 
+# Luminal activity by cell line and Parental/MP1 status
 plot_signature_activity(
   score_df = luminal_scores_df,
   signature_label = "luminal",
@@ -807,6 +861,7 @@ plot_signature_activity(
   save_plot = FALSE
 )
 
+# GATA3 activity in Parental BBN vs UPPL samples
 plot_signature_bbn_vs_uppl(gata3_scores_df,
                            signature_label = "GATA3",
                            parental_filter = "Parental",
@@ -818,6 +873,7 @@ plot_signature_bbn_vs_uppl(gata3_scores_df,
                              "UPPL" = "#D55E00"
                            ))
 
+# GATA3 activity in BBN vs UPPL, separated by Parental/MP1
 plot_signature_bbn_vs_uppl_combined(gata3_scores_df,
                                     signature_label = "GATA3",
                                     plot_title = "GATA3 Activity by Parental/MP1",
@@ -828,6 +884,7 @@ plot_signature_bbn_vs_uppl_combined(gata3_scores_df,
                                       "UPPL" = "#F5A623"
                                     ))
 
+# Pooled luminal activity in BBN vs UPPL
 plot_signature_bbn_vs_uppl_pooled(
   score_df=luminal_scores_df,
   signature_label="luminal",
@@ -840,6 +897,7 @@ plot_signature_bbn_vs_uppl_pooled(
   )
 )
 
+# GATA3 activity in Parental vs MP1, separated by model
 plot_signature_parental_vs_mp1_combined(
   gata3_scores_df, 
   signature_label="GATA3",
@@ -851,6 +909,7 @@ plot_signature_parental_vs_mp1_combined(
   out_file=NULL
 )
 
+# Pooled GATA3 activity in Parental vs MP1
 plot_signature_parental_vs_mp1_pooled(
   gata3_scores_df,
   signature_label = "GATA3",
