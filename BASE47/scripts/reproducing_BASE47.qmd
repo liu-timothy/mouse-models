@@ -1,0 +1,252 @@
+---
+title: "reproducing_kim_BASE47"
+format: html
+editor: visual
+---
+
+This is running BASE47 on **their data** and trying to reproduce their results
+
+# Workflow
+
+bulk RNA-seq per-sample expression matrix
+
+↓
+
+normalized/log-transformed expression
+
+↓
+
+subset to BASE47 genes only
+
+↓
+
+RNA-seq BASE47 classifier
+
+↓
+
+Basal vs Luminal call per sample
+
+# **Setup**
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("DESeq2", quietly = TRUE)) {
+  BiocManager::install("DESeq2")
+}
+
+if (!requireNamespace("biomaRt", quietly = TRUE)) {
+  BiocManager::install("biomaRt")
+}
+
+if (!requireNamespace("pamr", quietly = TRUE)) {
+  install.packages("pamr")
+}
+
+library(here)
+library(DESeq2)
+library(pamr)
+library(tidyverse)
+```
+
+# **BASE47 Genes**
+
+```{r}
+base47_genes <- c(
+  "ALOX5AP", "BHMT", "CAPN5", "CD14", "CDK6", "CYP2J2", "CYP4B1",
+  "EMP3", "FAP", "FBP1", "GATA3", "HMGCS2", "MSN", "MT1X", "MT2A",
+  "PRRX1", "PPARG", "SCNN1B", "SCNN1G", "SLC9A2", "SPINK1", "TBX2",
+  "TMPRSS2", "UPK2", "PPFIBP2", "SEMA5A", "ADIRF", "SLC27A2",
+  "GLIPR1", "UPK1A", "TRAK1", "PALLD", "GPD1L", "TOX3", "TMEM97",
+  "CHST15", "VGLL1", "PLEKHG6", "PDGFC", "GAREM1", "GDPD3", "RNF128",
+  "TUBB6", "CAVIN3", "AHNAK2", "RAB15", "FAM174B"
+)
+```
+
+# **RNAseq Input**
+
+- Data was obtained from GEO accession GSE160693 using the normalized gene count matrix file `GSE160693_Normalized_Gene_Counts_Matrix.txt.gz`
+
+```{r}
+#########################
+# Load and format Kim Lab RNA-seq data
+#########################
+kim_data <- read.delim(
+  here("data", "GSE160693_Normalized_Gene_Counts_Matrix.txt"),
+  row.names = 1,
+  check.names = FALSE
+)
+
+# format and keep only gene symbols
+gene_symbols <- sub("\\|.*$", "", rownames(kim_data))
+kim_data <- kim_data[!duplicated(gene_symbols), ]      # dedupe rows first
+gene_symbols <- gene_symbols[!duplicated(gene_symbols)]  # matching dedupe on the vector
+rownames(kim_data) <- gene_symbols                 # now safe to assign
+
+
+#########################
+# Match BASE47 gene names
+#########################
+
+#alt names
+alias_map <- c(ADIRF = "C10orf116", CAVIN3 = "PTRF", GAREM1 = "GAREM")
+
+geo_lookup_id <- ifelse(base47_genes %in% names(alias_map),
+                        alias_map[base47_genes], base47_genes)
+
+# subset rnaseq to only base47 genes (check which BASE47 genes are present in data)
+present <- geo_lookup_id %in% rownames(kim_data)
+if (any(!present)) {
+  warning("Missing from your data: ", paste(base47_genes[!present], collapse = ", "))
+}
+
+#########################
+# Prepare BASE47 test matrix
+#########################
+
+test_matrix <- as.matrix(kim_data[geo_lookup_id[present], , drop = FALSE])
+rownames(test_matrix) <- base47_genes[present]
+
+#median-center each gene
+test_input <- sweep(test_matrix, 1, apply(test_matrix, 1, median, na.rm = TRUE), "-")
+
+# add 0 rows for any missing BASE47 genes
+missing_genes <- setdiff(base47_genes, rownames(test_input))
+if (length(missing_genes) > 0) {
+  zero_rows <- matrix(0, nrow = length(missing_genes), ncol = ncol(test_input),
+                      dimnames = list(missing_genes, colnames(test_input)))
+  test_input <- rbind(test_input, zero_rows)
+}
+# put genes in EXACT BASE47 order
+test_input <- test_input[base47_genes, ]
+# confirm genes are median-centered
+stopifnot(all(abs(apply(test_input, 1, median, na.rm = TRUE)) < 1e-10))
+
+#save input to BASE47 before running
+write.table(
+  test_input,
+  here("data", "kimlab_BASE47_INPUT.txt"),
+  sep = "\t",
+  quote = FALSE,
+  col.names = NA
+)
+
+#########################
+# Load and prepare BASE47 training data
+#########################
+
+# run base47
+x <- read.table(here("data","BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt"),sep="\t",row.names=1,header=T)
+classes <- as.vector(t(x[1,]))
+xn <- apply(x[-1,],2,function(x){as.numeric(as.vector(x))})
+rownames(xn) <- rownames(x)[-1]
+
+# update gene names
+rownames(xn)[rownames(xn) == "GAREM"]   <- "GAREM1"
+rownames(xn)[rownames(xn) == "PRKCDBP"] <- "CAVIN3"
+xn <- xn[base47_genes, ] #make sure same gene order as BASE47
+
+#########################
+# Run BASE47 classifier
+#########################
+
+test <- read.table(here("data","kimlab_BASE47_INPUT.txt"), sep="\t",row.names=1,header=T)
+
+trainSet <- list(x=scale(xn), y=classes, geneid=rownames(xn), genenames=rownames(xn))
+mytrain <-pamr.train(trainSet)
+pred.class <- pamr.predict(mytrain,scale(test),0)
+pred.prob <- pamr.predict(mytrain,scale(test),0,type="posterior")
+
+#########################
+# Format BASE47 predictions
+#########################
+unc.tma.rna.calls_kim <- as.data.frame(cbind(pred.prob,pred.class))
+colnames(unc.tma.rna.calls_kim) <- c("Basal.Correlation","Luminal.Correlation","BASE47.Subtype")
+unc.tma.rna.calls_kim$BASE47.Subtype[unc.tma.rna.calls_kim$BASE47.Subtype == 1] <- "Basal"
+unc.tma.rna.calls_kim$BASE47.Subtype[unc.tma.rna.calls_kim$BASE47.Subtype == 2] <- "Luminal"
+unc.tma.rna.calls_kim
+
+unc.tma.rna.calls_kim_formatted <- unc.tma.rna.calls_kim %>%
+  rownames_to_column("Sample") %>%
+  mutate(
+    Tumor.Model = case_when(
+      str_detect(Sample, "^BBN") ~ "BBN",
+      str_detect(Sample, "^UPPL") ~ "UPPL",
+      TRUE ~ NA_character_
+    ),
+    Basal.Score = Basal.Correlation - Luminal.Correlation
+  ) %>%
+  arrange(Basal.Score)
+
+#extra formatting sort alphabetically by sample name
+unc.tma.rna.calls_kim_formatted <- unc.tma.rna.calls_kim_formatted %>%
+  mutate(
+    Sample = factor(
+      Sample,
+      levels = unique(Sample[order(
+        sub("[0-9]+$", "", Sample),
+        as.numeric(sub(".*?([0-9]+)$", "\\1", Sample))
+      )])
+    )
+  )
+
+#########################
+# Confusion matrix
+#########################
+
+# 1. Luminal samples together
+# 2. Basal samples together
+# 3. within each group, sort by Basal.Score
+confusion_mtx <- table(
+  Expected = unc.tma.rna.calls_kim_formatted$Tumor.Model,
+  Called = unc.tma.rna.calls_kim_formatted$BASE47.Subtype
+)
+confusion_mtx <- as.data.frame.matrix(confusion_mtx)
+
+#########################
+# Waterfall plot
+#########################
+wfall_basal_score <- ggplot(
+  plot_data,
+  aes(
+    x = Sample,
+    y = Basal.Score,
+    fill = BASE47.Subtype
+  )
+) +
+  geom_col(width = 0.8) +
+  geom_hline(
+    yintercept = 0,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "BASE47 score (Luminal ← 0 → Basal)",
+    fill = "BASE47 Subtype"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 8),
+    legend.position = "top"
+  )
+
+ggsave(
+  filename = here("outs", "kimlab_BASE47_reproduced_waterfall.png"),
+  plot = wfall_basal_score,
+  width = 7,
+  height = 6,
+  dpi = 300
+)
+
+wfall_basal_score
+```

@@ -7,6 +7,8 @@ format:
 editor: visual
 ---
 
+This is running BASE47 on **our data**
+
 # Workflow
 
 bulk RNA-seq per-sample expression matrix
@@ -28,6 +30,8 @@ RNA-seq BASE47 classifier
 Basal vs Luminal call per sample
 
 # **Setup**
+
+- Every output gets saved to /**outs**
 
 ```{r}
 #| message: false
@@ -56,7 +60,11 @@ library(pamr)
 library(tidyverse)
 ```
 
-## **BASE47 Genes**
+# **BASE47 Genes**
+
+- These are already predefined by paper
+
+- **ADIRF** isn't in our data so it's omitted (now BASE46 technically)
 
 ```{r}
 base47_genes <- c(
@@ -71,6 +79,26 @@ base47_genes <- c(
 ```
 
 # **RNAseq Input**
+
+- The input data for this analysis is an RNA-seq expression matrix generated from Plasmidsaurus sequencing data
+
+- **Dataset**
+
+  - **Comparison:** Parental vs. MP1
+
+  - **Plasmidsaurus ID:** K8HVZP
+
+  - **Sequencing date:** May 18, 2026
+
+  - **Original data format:** Expression matrix (`.tsv`)
+
+  - **File used for analysis:** `parental_mp1_K8HVZP-expression-matrix.tsv`
+
+  - **Data type:** CPM-normalized expression counts
+
+- Raw data for BBN+UPPL is cpm but BASE47 requires 90th percentile, log2(tpm+1)
+
+  - So I convert cpm to log2(cpm+1)
 
 ```{r}
 #expression matrix load in
@@ -205,13 +233,18 @@ stopifnot(all(abs(apply(base47_input, 1, median, na.rm = TRUE)) < 1e-10))
 # Load BASE47 RNA-seq prediction matrix
 download.file(
   "https://raw.githubusercontent.com/kimlabunc/Kardos_Rose_NanoString/main/BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",
-  destfile = "BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt"
+  destfile = here("data", "BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt")
 )
 
 # ==================
 # x = RNAseq training/predictor matrix
 # ==================
-x <- read.table("BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt",sep="\t",row.names=1,header=T)
+x <- read.table(
+  here("data", "BASE47_RNASEQ_PREDICTOR_DO_NOT_EDIT.txt"),
+  sep = "\t",
+  row.names = 1,
+  header = TRUE
+)
 
 # gets labels for subtypes from 1ST ROW where: 1 = Basal; 2=Luminal
 classes <- as.vector(t(x[1,]))
@@ -252,6 +285,7 @@ xn_matched <- xn[common_genes, , drop = FALSE]
 # Classify BBN963+UPPL1541 RNAseq file
 df <- base47_input[rownames(xn_matched), , drop = FALSE]
 
+# training lines taken from kim lab repo VVV
 trainSet <- list(x=scale(xn_matched), y=classes, geneid=rownames(xn_matched), genenames=rownames(xn_matched))
 mytrain <-pamr.train(trainSet)
 pred.class <- pamr.predict(mytrain,scale(df),0)
@@ -264,7 +298,7 @@ unc.tma.rna.calls$BASE47.Subtype[unc.tma.rna.calls$BASE47.Subtype == 2] <- "Lumi
 write.csv(unc.tma.rna.calls, file="BASE47_classification_output.csv", row.names=TRUE)
 ```
 
-# **Plots**
+# **Waterfall Classification Plot**
 
 ```{r}
 #Create new columns for expected mol subtype and its BASE47 call
@@ -332,7 +366,7 @@ wfall_basal_score <- ggplot(
     )
   )
 
-ggsave(here("outs","basal_score_waterfall.png"), wfall_basal_score, width = 7, height = 5, dpi = 400)
+ggsave(here("outs","BASE47_molecular_subtype_classification.png"), wfall_basal_score, width = 7, height = 5, dpi = 400)
 
 wfall_basal_score
 ```
@@ -382,11 +416,12 @@ write.csv(
 gene_scores
 ```
 
-Heatmap Plot of Gene Contributions
+# Heatmap Plot of Gene Contributions
 
 ```{r}
-df_scaled <- scale(df)
 
+#data format
+df_scaled <- scale(df)
 basal_level <- "1"
 luminal_level <- "2"
 
@@ -500,8 +535,8 @@ top_contributors <- contribution_long %>%
   ungroup()
 
 write.csv(
-  contribution_long,
-  "BASE47_gene_contributions_by_sample.csv",
+  contribution_long, here("outs",
+  "BASE47_gene_contributions_by_sample.csv"),
   row.names = FALSE
 )
 
@@ -555,738 +590,27 @@ gene_contribution_heatmap <- ggplot(
   )
 
 gene_contribution_heatmap
-ggsave("heatmap_plot.png", plot = gene_contribution_heatmap, dpi=400)
-```
-
-```{r}
-base47_cpm_alignment <- function(
-    expression_data,
-    pam_fit,
-    pam_train_data,
-    numerator,
-    denominator,
-    threshold = 0,
-    basal_class = "1",
-    luminal_class = "2",
-    numerator_subtype = c("Basal", "Luminal"),
-    gene_col = "auto",
-    pam_gene_col = NULL,
-    pseudocount = 0.5,
-    top_n = 30,
-    label_n = 15
-) {
-  
-  numerator_subtype <- match.arg(numerator_subtype)
-  
-  required_packages <- c(
-    "pamr",
-    "dplyr",
-    "tidyr",
-    "ggplot2",
-    "tibble"
-  )
-  
-  missing_packages <- required_packages[
-    !vapply(
-      required_packages,
-      requireNamespace,
-      logical(1),
-      quietly = TRUE
-    )
-  ]
-  
-  if (length(missing_packages) > 0) {
-    stop(
-      "Install missing packages: ",
-      paste(missing_packages, collapse = ", ")
-    )
-  }
-  
-  dat <- as.data.frame(
-    expression_data,
-    check.names = FALSE
-  )
-  
-  #----------------------------------
-  # 1. Identify CPM columns and groups
-  #----------------------------------
-  
-  cpm_cols <- grep(
-    "_cpm$",
-    colnames(dat),
-    value = TRUE
-  )
-  
-  if (length(cpm_cols) == 0) {
-    stop("No columns ending in '_cpm' were found.")
-  }
-  
-  sample_information <- tibble::tibble(
-    Column = cpm_cols,
-    Sample = sub("_cpm$", "", cpm_cols)
-  ) |>
-    dplyr::mutate(
-      Group = sub(
-        "_rep_[0-9]+$",
-        "",
-        .data$Sample
-      )
-    )
-  
-  available_groups <- unique(sample_information$Group)
-  
-  if (!numerator %in% available_groups) {
-    stop(
-      "Numerator group not found. Available groups: ",
-      paste(available_groups, collapse = ", ")
-    )
-  }
-  
-  if (!denominator %in% available_groups) {
-    stop(
-      "Denominator group not found. Available groups: ",
-      paste(available_groups, collapse = ", ")
-    )
-  }
-  
-  numerator_cols <- sample_information$Column[
-    sample_information$Group == numerator
-  ]
-  
-  denominator_cols <- sample_information$Column[
-    sample_information$Group == denominator
-  ]
-  
-  # Convert CPM columns to a numeric matrix
-  cpm_matrix <- do.call(
-    cbind,
-    lapply(
-      dat[cpm_cols],
-      function(x) {
-        suppressWarnings(
-          as.numeric(as.character(x))
-        )
-      }
-    )
-  )
-  
-  colnames(cpm_matrix) <- cpm_cols
-  rownames(cpm_matrix) <- seq_len(nrow(dat))
-  
-  numerator_mean <- rowMeans(
-    cpm_matrix[, numerator_cols, drop = FALSE],
-    na.rm = TRUE
-  )
-  
-  denominator_mean <- rowMeans(
-    cpm_matrix[, denominator_cols, drop = FALSE],
-    na.rm = TRUE
-  )
-  
-  #----------------------------------
-  # 2. Extract BASE47 centroids
-  #----------------------------------
-  
-  pam_genes <- pamr::pamr.listgenes(
-    fit = pam_fit,
-    data = pam_train_data,
-    threshold = threshold,
-    genenames = TRUE
-  )
-  
-  pam_genes <- as.data.frame(
-    pam_genes,
-    stringsAsFactors = FALSE,
-    check.names = FALSE
-  )
-  
-  basal_score_col <- paste0(
-    basal_class,
-    "-score"
-  )
-  
-  luminal_score_col <- paste0(
-    luminal_class,
-    "-score"
-  )
-  
-  required_score_cols <- c(
-    basal_score_col,
-    luminal_score_col
-  )
-  
-  missing_score_cols <- setdiff(
-    required_score_cols,
-    colnames(pam_genes)
-  )
-  
-  if (length(missing_score_cols) > 0) {
-    stop(
-      "Could not find PAM score columns: ",
-      paste(missing_score_cols, collapse = ", "),
-      "\nAvailable columns: ",
-      paste(colnames(pam_genes), collapse = ", ")
-    )
-  }
-  
-  #----------------------------------
-  # 3. Determine the best gene mapping
-  #----------------------------------
-  
-  if (gene_col == "auto") {
-    expression_gene_candidates <- intersect(
-      c("gene_name", "gene_id"),
-      colnames(dat)
-    )
-  } else {
-    expression_gene_candidates <- gene_col
-  }
-  
-  if (length(expression_gene_candidates) == 0) {
-    stop(
-      "No gene identifier column was found. ",
-      "Specify gene_col = 'gene_name' or 'gene_id'."
-    )
-  }
-  
-  if (!all(expression_gene_candidates %in% colnames(dat))) {
-    stop("The requested gene_col was not found.")
-  }
-  
-  if (is.null(pam_gene_col)) {
-    pam_gene_candidates <- setdiff(
-      colnames(pam_genes),
-      grep(
-        "-score$|rank|proportion|frequency",
-        colnames(pam_genes),
-        value = TRUE,
-        ignore.case = TRUE
-      )
-    )
-  } else {
-    pam_gene_candidates <- pam_gene_col
-  }
-  
-  if (!all(pam_gene_candidates %in% colnames(pam_genes))) {
-    stop("The requested pam_gene_col was not found.")
-  }
-  
-  mapping_grid <- expand.grid(
-    Expression.Column = expression_gene_candidates,
-    PAM.Column = pam_gene_candidates,
-    stringsAsFactors = FALSE
-  )
-  
-  mapping_grid$Matches <- vapply(
-    seq_len(nrow(mapping_grid)),
-    function(i) {
-      
-      expression_ids <- unique(
-        na.omit(
-          as.character(
-            dat[[mapping_grid$Expression.Column[i]]]
-          )
-        )
-      )
-      
-      pam_ids <- unique(
-        na.omit(
-          as.character(
-            pam_genes[[mapping_grid$PAM.Column[i]]]
-          )
-        )
-      )
-      
-      length(intersect(expression_ids, pam_ids))
-    },
-    numeric(1)
-  )
-  
-  best_mapping <- mapping_grid[
-    which.max(mapping_grid$Matches),
-    ,
-    drop = FALSE
-  ]
-  
-  if (best_mapping$Matches == 0) {
-    stop(
-      "No BASE47 genes matched the RNA-seq identifiers. ",
-      "Check whether BASE47 uses symbols, Ensembl IDs, ",
-      "human genes, or mouse genes."
-    )
-  }
-  
-  expression_gene_col <- best_mapping$Expression.Column
-  selected_pam_gene_col <- best_mapping$PAM.Column
-  
-  #----------------------------------
-  # 4. Calculate RNA-seq log2FC
-  #----------------------------------
-  
-  sum_or_na <- function(x) {
-    if (all(is.na(x))) {
-      return(NA_real_)
-    }
-    
-    sum(x, na.rm = TRUE)
-  }
-  
-  rna_results <- tibble::tibble(
-    Gene = as.character(dat[[expression_gene_col]]),
-    Numerator.Mean.CPM = numerator_mean,
-    Denominator.Mean.CPM = denominator_mean
-  ) |>
-    dplyr::filter(
-      !is.na(.data$Gene),
-      .data$Gene != ""
-    ) |>
-    dplyr::group_by(.data$Gene) |>
-    dplyr::summarise(
-      Numerator.Mean.CPM =
-        sum_or_na(.data$Numerator.Mean.CPM),
-      
-      Denominator.Mean.CPM =
-        sum_or_na(.data$Denominator.Mean.CPM),
-      
-      .groups = "drop"
-    ) |>
-    dplyr::mutate(
-      log2FC.NumeratorVsDenominator = log2(
-        (.data$Numerator.Mean.CPM + pseudocount) /
-          (.data$Denominator.Mean.CPM + pseudocount)
-      )
-    )
-  
-  #----------------------------------
-  # 5. Calculate BASE47 gene effects
-  #----------------------------------
-  
-  base47_results <- tibble::tibble(
-    Gene = as.character(
-      pam_genes[[selected_pam_gene_col]]
-    ),
-    
-    Basal.Centroid = suppressWarnings(
-      as.numeric(
-        as.character(
-          pam_genes[[basal_score_col]]
-        )
-      )
-    ),
-    
-    Luminal.Centroid = suppressWarnings(
-      as.numeric(
-        as.character(
-          pam_genes[[luminal_score_col]]
-        )
-      )
-    )
-  ) |>
-    dplyr::filter(
-      !is.na(.data$Gene),
-      .data$Gene != ""
-    ) |>
-    dplyr::distinct(
-      .data$Gene,
-      .keep_all = TRUE
-    ) |>
-    dplyr::mutate(
-      BASE47.Effect =
-        .data$Basal.Centroid -
-        .data$Luminal.Centroid,
-      
-      BASE47.Direction = dplyr::case_when(
-        .data$BASE47.Effect > 0 ~ "Basal",
-        .data$BASE47.Effect < 0 ~ "Luminal",
-        TRUE ~ "Neutral"
-      )
-    )
-  
-  #----------------------------------
-  # 6. Join and evaluate concordance
-  #----------------------------------
-  
-  comparison <- base47_results |>
-    dplyr::left_join(
-      rna_results,
-      by = "Gene"
-    ) |>
-    dplyr::mutate(
-      log2FC.BasalMinusLuminal = if (
-        numerator_subtype == "Basal"
-      ) {
-        .data$log2FC.NumeratorVsDenominator
-      } else {
-        -.data$log2FC.NumeratorVsDenominator
-      },
-      
-      RNAseq.Direction = dplyr::case_when(
-        is.na(.data$log2FC.BasalMinusLuminal) ~
-          "Not measured",
-        
-        .data$log2FC.BasalMinusLuminal > 0 ~
-          "Basal",
-        
-        .data$log2FC.BasalMinusLuminal < 0 ~
-          "Luminal",
-        
-        TRUE ~ "Neutral"
-      ),
-      
-      Agreement = dplyr::case_when(
-        is.na(.data$log2FC.BasalMinusLuminal) ~
-          "Not measured",
-        
-        .data$BASE47.Effect == 0 |
-          .data$log2FC.BasalMinusLuminal == 0 ~
-          "Neutral",
-        
-        sign(.data$BASE47.Effect) ==
-          sign(.data$log2FC.BasalMinusLuminal) ~
-          "Aligned",
-        
-        TRUE ~ "Opposed"
-      ),
-      
-      # Positive means agreement.
-      # Negative means disagreement.
-      # This is not an exact PAM model coefficient.
-      Alignment.Score =
-        .data$BASE47.Effect *
-        .data$log2FC.BasalMinusLuminal
-    ) |>
-    dplyr::arrange(
-      dplyr::desc(abs(.data$BASE47.Effect))
-    )
-  
-  measured <- comparison |>
-    dplyr::filter(
-      !is.na(.data$log2FC.BasalMinusLuminal)
-    )
-  
-  directional <- measured |>
-    dplyr::filter(
-      .data$BASE47.Effect != 0,
-      .data$log2FC.BasalMinusLuminal != 0
-    )
-  
-  spearman_rho <- if (
-    nrow(measured) >= 3 &&
-    stats::sd(measured$BASE47.Effect) > 0 &&
-    stats::sd(
-      measured$log2FC.BasalMinusLuminal
-    ) > 0
-  ) {
-    stats::cor(
-      measured$BASE47.Effect,
-      measured$log2FC.BasalMinusLuminal,
-      method = "spearman",
-      use = "complete.obs"
-    )
-  } else {
-    NA_real_
-  }
-  
-  percent_aligned <- if (nrow(directional) > 0) {
-    100 * mean(
-      directional$Agreement == "Aligned"
-    )
-  } else {
-    NA_real_
-  }
-  
-  summary_table <- tibble::tibble(
-    Numerator = numerator,
-    Denominator = denominator,
-    Expression.Gene.Column = expression_gene_col,
-    PAM.Gene.Column = selected_pam_gene_col,
-    BASE47.Genes = nrow(comparison),
-    Matched.Genes = nrow(measured),
-    Directional.Genes = nrow(directional),
-    Aligned.Genes = sum(
-      directional$Agreement == "Aligned"
-    ),
-    Opposed.Genes = sum(
-      directional$Agreement == "Opposed"
-    ),
-    Percent.Aligned = percent_aligned,
-    Spearman.Rho = spearman_rho
-  )
-  
-  #----------------------------------
-  # 7. Concordance scatter plot
-  #----------------------------------
-  
-  label_data <- measured |>
-    dplyr::mutate(
-      Label.Score = abs(.data$Alignment.Score)
-    ) |>
-    dplyr::arrange(
-      dplyr::desc(.data$Label.Score)
-    ) |>
-    dplyr::slice_head(n = label_n)
-  
-  alignment_plot <- ggplot2::ggplot(
-    measured,
-    ggplot2::aes(
-      x = .data$BASE47.Effect,
-      y = .data$log2FC.BasalMinusLuminal,
-      color = .data$Agreement
-    )
-  ) +
-    ggplot2::geom_hline(
-      yintercept = 0,
-      linetype = "dashed"
-    ) +
-    ggplot2::geom_vline(
-      xintercept = 0,
-      linetype = "dashed"
-    ) +
-    ggplot2::geom_point(
-      size = 3,
-      alpha = 0.85
-    ) +
-    ggplot2::scale_color_manual(
-      values = c(
-        "Aligned" = "#238b45",
-        "Opposed" = "#cb181d",
-        "Neutral" = "grey60"
-      )
-    ) +
-    ggplot2::labs(
-      title = "RNA-seq Alignment With BASE47",
-      subtitle = paste(
-        numerator,
-        "versus",
-        denominator
-      ),
-      x = paste0(
-        "BASE47 centroid effect\n",
-        "Basal minus Luminal"
-      ),
-      y = paste0(
-        "RNA-seq log2FC\n",
-        "oriented Basal minus Luminal"
-      ),
-      color = "Agreement",
-      caption = paste0(
-        "Spearman rho = ",
-        round(spearman_rho, 3),
-        "; aligned = ",
-        round(percent_aligned, 1),
-        "%"
-      )
-    ) +
-    ggplot2::theme_minimal() +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(
-        face = "bold"
-      )
-    )
-  
-  if (
-    nrow(label_data) > 0 &&
-    requireNamespace("ggrepel", quietly = TRUE)
-  ) {
-    alignment_plot <- alignment_plot +
-      ggrepel::geom_text_repel(
-        data = label_data,
-        ggplot2::aes(label = .data$Gene),
-        size = 3,
-        show.legend = FALSE,
-        max.overlaps = Inf
-      )
-  }
-  
-  #----------------------------------
-  # 8. Top BASE47 genes: RNA log2FC
-  #----------------------------------
-  
-  top_data <- measured |>
-    dplyr::arrange(
-      dplyr::desc(abs(.data$BASE47.Effect))
-    ) |>
-    dplyr::slice_head(n = top_n)
-  
-  top_data$Gene <- factor(
-    top_data$Gene,
-    levels = rev(top_data$Gene)
-  )
-  
-  log2fc_plot <- ggplot2::ggplot(
-    top_data,
-    ggplot2::aes(
-      x = .data$Gene,
-      y = .data$log2FC.BasalMinusLuminal,
-      fill = .data$Agreement
-    )
-  ) +
-    ggplot2::geom_hline(
-      yintercept = 0,
-      linetype = "dashed"
-    ) +
-    ggplot2::geom_col() +
-    ggplot2::coord_flip() +
-    ggplot2::scale_fill_manual(
-      values = c(
-        "Aligned" = "#238b45",
-        "Opposed" = "#cb181d",
-        "Neutral" = "grey60"
-      )
-    ) +
-    ggplot2::labs(
-      title = "RNA-seq log2FC of Top BASE47 Genes",
-      subtitle = paste0(
-        "Ranked by absolute BASE47 centroid effect, n = ",
-        nrow(top_data)
-      ),
-      x = "Gene",
-      y = "RNA-seq log2FC: Basal minus Luminal",
-      fill = "Agreement"
-    ) +
-    ggplot2::theme_minimal() +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(
-        face = "bold"
-      )
-    )
-  
-  #----------------------------------
-  # 9. Replicate-level expression heatmap
-  #----------------------------------
-  
-  top_gene_names <- as.character(top_data$Gene)
-  
-  expression_long <- data.frame(
-    Gene = as.character(dat[[expression_gene_col]]),
-    cpm_matrix,
-    check.names = FALSE
-  ) |>
-    tidyr::pivot_longer(
-      cols = -.data$Gene,
-      names_to = "Column",
-      values_to = "CPM"
-    ) |>
-    dplyr::filter(
-      !is.na(.data$Gene),
-      .data$Gene != "",
-      .data$Gene %in% top_gene_names
-    ) |>
-    dplyr::group_by(
-      .data$Gene,
-      .data$Column
-    ) |>
-    dplyr::summarise(
-      CPM = sum_or_na(.data$CPM),
-      .groups = "drop"
-    ) |>
-    dplyr::left_join(
-      sample_information,
-      by = "Column"
-    ) |>
-    dplyr::mutate(
-      Log2.CPM = log2(.data$CPM + pseudocount)
-    ) |>
-    dplyr::group_by(.data$Gene) |>
-    dplyr::mutate(
-      Row.Z = {
-        gene_sd <- stats::sd(
-          .data$Log2.CPM,
-          na.rm = TRUE
-        )
-        
-        gene_mean <- mean(
-          .data$Log2.CPM,
-          na.rm = TRUE
-        )
-        
-        if (is.na(gene_sd) || gene_sd == 0) {
-          rep(0, dplyr::n())
-        } else {
-          (.data$Log2.CPM - gene_mean) /
-            gene_sd
-        }
-      }
-    ) |>
-    dplyr::ungroup() |>
-    dplyr::mutate(
-      Gene = factor(
-        .data$Gene,
-        levels = rev(top_gene_names)
-      ),
-      Sample = factor(
-        .data$Sample,
-        levels = sample_information$Sample
-      )
-    )
-  
-  expression_heatmap <- ggplot2::ggplot(
-    expression_long,
-    ggplot2::aes(
-      x = .data$Sample,
-      y = .data$Gene,
-      fill = .data$Row.Z
-    )
-  ) +
-    ggplot2::geom_tile() +
-    ggplot2::facet_grid(
-      cols = ggplot2::vars(.data$Group),
-      scales = "free_x",
-      space = "free_x"
-    ) +
-    ggplot2::scale_fill_gradient2(
-      midpoint = 0,
-      name = "Row Z-score"
-    ) +
-    ggplot2::labs(
-      title = "Expression of Top BASE47 Genes",
-      subtitle = "Row-scaled log2(CPM + pseudocount)",
-      x = "Sample",
-      y = "Gene"
-    ) +
-    ggplot2::theme_minimal() +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(
-        face = "bold"
-      ),
-      axis.text.x = ggplot2::element_text(
-        angle = 90,
-        hjust = 1,
-        vjust = 0.5
-      ),
-      panel.spacing.x = grid::unit(
-        1,
-        "lines"
-      )
-    )
-  
-  list(
-    data = comparison,
-    summary = summary_table,
-    gene_mapping = best_mapping,
-    sample_information = sample_information,
-    alignment_plot = alignment_plot,
-    log2fc_plot = log2fc_plot,
-    expression_heatmap = expression_heatmap
-  )
-}
-
-
+ggsave(
+  here("outs","BASE47_gene_contributions_heatmap.png"), plot = gene_contribution_heatmap, dpi=400)
 ```
 
 Lollipop Plot
 
+- Gene contributions
+
 ```{r}
 subtype_pal <- c(Basal = "#C0392B", Luminal = "#2C6FA6")
 
-sample_id <- unique(contribution_long$Sample)[1]   # pick your sample
+sample_id <- unique(contribution_long$Sample)[1]   # pick which sample to look at
 top_n      <- 47
 
+# filter df to get specific sample
 lolli_one <- contribution_long %>%
   filter(Sample == sample_id) %>%
   slice_max(abs(Contribution), n = top_n, with_ties = FALSE) %>%
   mutate(Gene = factor(Gene, levels = Gene[order(Contribution)]))  # sort by signed value
 
+# generate lollipop
 p_one <- ggplot(lolli_one, aes(x = Contribution, y = Gene, colour = Supports)) +
   geom_segment(aes(x = 0, xend = Contribution, yend = Gene), linewidth = 0.6) +
   geom_vline(xintercept = 0, colour = "grey40", linewidth = 0.4) +
@@ -1307,5 +631,14 @@ p_one <- ggplot(lolli_one, aes(x = Contribution, y = Gene, colour = Supports)) +
     legend.position    = c(0.85, 0.15),
     legend.background   = element_rect(fill = "white", colour = NA)
   )
+
+ggsave(
+  here("outs", "BASE47_gene_contributions_lollipop.png"),
+  plot = p_one,
+  width = 7,
+  height = 8,
+  dpi = 400
+)
+
 p_one
 ```
